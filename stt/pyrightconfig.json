@@ -1,0 +1,20 @@
+{
+  "typeCheckingMode": "basic",
+  "reportMissingTypeArgument": "none",
+  "reportMissingImports": "none",
+  "reportReturnType": "none",
+  "include": [
+    "stt_service",
+    "scripts/download_korean_model.py",
+    "main.py"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "./stt_service"
+      ]
+    }
+  ]
+}

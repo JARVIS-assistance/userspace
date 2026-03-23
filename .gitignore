@@ -1,0 +1,29 @@
+.DS_Store
+
+# Local environment
+.env
+.venv/
+.python-version
+
+# Local runtime config
+config.json
+
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Test and build outputs
+dist/
+build/
+
+# Frontend dependencies and generated assets
+ui/node_modules/
+ui/dist/
+
+# Logs
+*.log
