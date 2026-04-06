@@ -67,24 +67,14 @@ class STTProfileSettings:
 
 @dataclass(frozen=True)
 class OllamaSettings:
-    base_url: str = "http://localhost:11434"
-    model: str = "gemma3:4b"
+    base_url: str = "http://127.0.0.1:8001"
     timeout: float = 60.0
-    temperature: float = 0.7
-    top_p: float = 0.9
-    max_tokens: int = 512
-    system_prompt: str = "You are JARVIS, a helpful AI assistant. Respond concisely and naturally in conversation."
 
     @classmethod
     def from_mapping(cls, source: dict[str, Any]) -> "OllamaSettings":
         return cls(
-            base_url=str(source.get("base_url", "http://localhost:11434")),
-            model=str(source.get("model", "gemma3:4b")),
+            base_url=str(source.get("base_url", "http://127.0.0.1:8001")),
             timeout=float(source.get("timeout", 60.0)),
-            temperature=float(source.get("temperature", 0.7)),
-            top_p=float(source.get("top_p", 0.9)),
-            max_tokens=int(source.get("max_tokens", 512)),
-            system_prompt=str(source.get("system_prompt", "You are JARVIS, a helpful AI assistant.")),
         )
 
 
@@ -94,6 +84,10 @@ class Settings:
     host: str
     port: int
     env: str
+    auth_username: str
+    auth_password: str
+    auth_jwt_secret: str
+    auth_token_expire_hours: int
     stt_model_name: str
     stt_device: str
     stt_compute_type: str
@@ -141,6 +135,7 @@ def _build_profiles(source: dict[str, Any]) -> dict[str, STTProfileSettings]:
 def load_settings(config_path: str | None = None) -> Settings:
     path = config_path or os.getenv("USERSPACE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
     raw = _load_raw_config(path)
+    auth = _safe_dict(raw.get("auth"))
     server = _safe_dict(raw.get("server"))
     stt = _safe_dict(raw.get("stt"))
     ollama_raw = _safe_dict(raw.get("ollama"))
@@ -155,6 +150,10 @@ def load_settings(config_path: str | None = None) -> Settings:
         host=str(server.get("host", "127.0.0.1")),
         port=int(server.get("port", 8765)),
         env=str(server.get("env", "dev")),
+        auth_username=str(auth.get("username", "admin")),
+        auth_password=str(auth.get("password", "jarvis")),
+        auth_jwt_secret=str(auth.get("jwt_secret", "jarvis-secret-key-change-me")),
+        auth_token_expire_hours=int(auth.get("token_expire_hours", 24)),
         stt_model_name=str(stt.get("model_name", "small")),
         stt_device=str(stt.get("device", "cpu")),
         stt_compute_type=str(stt.get("compute_type", "int8")),

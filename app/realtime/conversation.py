@@ -212,12 +212,10 @@ class ConversationManager:
         """
         self._barge_in_triggered = False
         self._current_response = ""
-        
-        # Transition to SPEAKING
-        yield self._set_state(ConversationState.SPEAKING)
+        speaking_started = False
         
         try:
-            async for chunk in self.ollama.stream_generate(
+            async for event in self.ollama.stream_conversation(
                 prompt=user_text,
                 context=self.context.get_messages()[:-1],  # Exclude current user msg (already in prompt)
             ):
@@ -225,20 +223,38 @@ class ConversationManager:
                 if self._barge_in_triggered:
                     logger.debug("Barge-in detected during LLM streaming, stopping")
                     break
-                
-                if chunk.text:
-                    self._current_response += chunk.text
-                    
-                    # Emit delta for real-time TTS
-                    yield EventEnvelope(
-                        type="conversation.delta",
-                        payload={
-                            "text": chunk.text,
-                            "timestamp": int(time.time() * 1000),
-                        },
-                    )
-                
-                if chunk.is_done:
+
+                if event.type in {
+                    "conversation.classification",
+                    "conversation.thinking",
+                    "conversation.plan_step",
+                    "conversation.error",
+                }:
+                    payload = dict(event.payload)
+                    payload.setdefault("timestamp", int(time.time() * 1000))
+                    yield EventEnvelope(type=event.type, payload=payload)
+                    continue
+
+                if event.type == "conversation.delta":
+                    text = str(event.payload.get("text", ""))
+                    if text:
+                        if not speaking_started:
+                            yield self._set_state(ConversationState.SPEAKING)
+                            speaking_started = True
+                        self._current_response += text
+                        yield EventEnvelope(
+                            type="conversation.delta",
+                            payload={
+                                "text": text,
+                                "timestamp": int(time.time() * 1000),
+                            },
+                        )
+                    continue
+
+                if event.type == "conversation.done":
+                    done_text = str(event.payload.get("text", "")).strip()
+                    if done_text and not self._current_response.strip():
+                        self._current_response = done_text
                     break
         
         except asyncio.CancelledError:

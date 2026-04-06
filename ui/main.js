@@ -1,67 +1,19 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen } = require('electron');
 const path = require('path');
-const fs = require('fs');
-const { spawn } = require('child_process');
 
 const USERSPACE_HOST = process.env.USERSPACE_HOST || '127.0.0.1';
 const USERSPACE_PORT = Number(process.env.USERSPACE_PORT || '8765');
 
-let userspaceProcess = null;
+const SPHERE_SIZE = 100;
+const SPHERE_MARGIN = 24;
+const SPHERE_WINDOW_W = 560; // wide enough for speech bubble
+const SPHERE_WINDOW_H = 160;
 
-function resolveUserspacePythonExecutable(userspaceRoot) {
-  const venvPython =
-    process.platform === 'win32'
-      ? path.join(userspaceRoot, '.venv', 'Scripts', 'python.exe')
-      : path.join(userspaceRoot, '.venv', 'bin', 'python');
+let mainWindow = null;
+let savedBounds = null;
+let isSphereMode = false;
 
-  if (fs.existsSync(venvPython)) {
-    return venvPython;
-  }
-
-  return process.env.PYTHON_BIN || 'python3';
-}
-
-function startUserspace() {
-  if (userspaceProcess) return;
-
-  const userspaceRoot = path.resolve(__dirname, '..', 'userspace');
-  const runFile = path.join(userspaceRoot, 'run.py');
-  if (!fs.existsSync(runFile)) {
-    console.warn(`[userspace] run.py not found at ${runFile}`);
-    return;
-  }
-
-  const pythonBin = resolveUserspacePythonExecutable(userspaceRoot);
-  userspaceProcess = spawn(pythonBin, ['run.py'], {
-    cwd: userspaceRoot,
-    env: {
-      ...process.env,
-      USERSPACE_HOST,
-      USERSPACE_PORT: String(USERSPACE_PORT)
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  userspaceProcess.stdout.on('data', (chunk) => {
-    process.stdout.write(`[userspace] ${chunk}`);
-  });
-
-  userspaceProcess.stderr.on('data', (chunk) => {
-    process.stderr.write(`[userspace] ${chunk}`);
-  });
-
-  userspaceProcess.on('exit', (code, signal) => {
-    console.log(`[userspace] exited (code=${code}, signal=${signal})`);
-    userspaceProcess = null;
-  });
-}
-
-function stopUserspace() {
-  if (!userspaceProcess) return;
-  userspaceProcess.kill();
-  userspaceProcess = null;
-}
-
+// ── Window ─────────────────────────────────────────────
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -71,6 +23,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#00000000',
     transparent: true,
+    hasShadow: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -78,10 +31,88 @@ function createWindow() {
     }
   });
 
+  mainWindow = win;
+
+  // Pipe renderer console to terminal (safely)
+  win.webContents.on('console-message', (e, level, msg, line, src) => {
+    try { process.stdout.write(`[renderer] ${msg}\n`); } catch (_) {}
+  });
+
+  // Detect renderer crash
+  win.webContents.on('render-process-gone', (e, details) => {
+    try { process.stderr.write(`[CRASH] renderer process gone: ${details.reason} ${details.exitCode}\n`); } catch (_) {}
+  });
+
   win.loadFile(path.join(__dirname, 'index.html'));
   win.maximize();
+
+  // Intercept OS minimize → trigger sphere animation instead
+  win.on('minimize', (e) => {
+    if (!isSphereMode) {
+      e.preventDefault();
+      win.webContents.send('window:minimize-to-sphere');
+    }
+  });
+
+  win.on('closed', () => {
+    mainWindow = null;
+  });
 }
 
+// ── Sphere mode transitions ───────────────────────────
+function transitionToSphere() {
+  if (!mainWindow || isSphereMode) return;
+
+  savedBounds = mainWindow.getBounds();
+  isSphereMode = true;
+
+  const display = screen.getDisplayNearestPoint(
+    screen.getCursorScreenPoint()
+  );
+  const { width: screenW } = display.workArea;
+
+  mainWindow.setAlwaysOnTop(true, 'floating');
+  mainWindow.setResizable(false);
+  mainWindow.setHasShadow(false);
+  mainWindow.setBounds({
+    x: screenW - SPHERE_WINDOW_W - SPHERE_MARGIN,
+    y: SPHERE_MARGIN,
+    width: SPHERE_WINDOW_W,
+    height: SPHERE_WINDOW_H,
+  }, true);
+
+  if (process.platform === 'darwin') {
+    mainWindow.setWindowButtonVisibility(false);
+  }
+
+  // Wait a tick for resize to settle, then tell renderer sphere is ready
+  setTimeout(() => {
+    if (mainWindow) mainWindow.webContents.send('window:sphere-ready');
+  }, 50);
+}
+
+function restoreFromSphere() {
+  if (!mainWindow || !isSphereMode) return;
+
+  isSphereMode = false;
+  mainWindow.setAlwaysOnTop(false);
+  mainWindow.setResizable(true);
+  mainWindow.setHasShadow(true);
+
+  if (savedBounds) {
+    mainWindow.setBounds(savedBounds, true);
+    savedBounds = null;
+  } else {
+    mainWindow.maximize();
+  }
+
+  // Wait for window resize to settle, then tell renderer to fade in waveform
+  setTimeout(() => {
+    if (mainWindow) mainWindow.webContents.send('window:restore-from-sphere');
+  }, 50);
+}
+
+// ── IPC handlers ───────────────────────────────────────
 ipcMain.handle('userspace:get-config', async () => {
   return {
     host: USERSPACE_HOST,
@@ -104,6 +135,36 @@ ipcMain.handle('userspace:health', async () => {
   }
 });
 
+// Window control IPCs
+ipcMain.on('window:minimize', () => {
+  if (mainWindow) {
+    mainWindow.webContents.send('window:minimize-to-sphere');
+  }
+});
+
+ipcMain.on('window:close', () => {
+  if (mainWindow) mainWindow.close();
+});
+
+ipcMain.on('window:minimize-animation-done', () => {
+  transitionToSphere();
+});
+
+ipcMain.on('window:restore', () => {
+  restoreFromSphere();
+});
+
+// Sphere mode: toggle click-through based on cursor position
+ipcMain.on('window:set-ignore-mouse', (event, ignore) => {
+  if (!mainWindow) return;
+  if (ignore) {
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  } else {
+    mainWindow.setIgnoreMouseEvents(false);
+  }
+});
+
+// ── App lifecycle ──────────────────────────────────────
 app.whenReady().then(() => {
   // Allow microphone access for STT
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -121,19 +182,17 @@ app.whenReady().then(() => {
     return false;
   });
 
-  startUserspace();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    } else if (isSphereMode) {
+      restoreFromSphere();
+    }
   });
 });
 
 app.on('window-all-closed', () => {
-  stopUserspace();
   if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-  stopUserspace();
 });
