@@ -8,6 +8,8 @@ from typing import Any
 
 
 DEFAULT_CONFIG_PATH = "config.json"
+DEFAULT_DOTENV_PATH = ".env"
+DEFAULT_AUTH_API_BASE = "http://127.0.0.1:8001"
 DEFAULT_STT_PROFILES: dict[str, dict[str, Any]] = {
     "default": {
         "frame_ms": 20,
@@ -84,6 +86,7 @@ class Settings:
     host: str
     port: int
     env: str
+    auth_api_base: str
     auth_username: str
     auth_password: str
     auth_jwt_secret: str
@@ -102,6 +105,38 @@ class Settings:
 
 def _safe_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _load_dotenv_into_environ(path: str | None = None) -> None:
+    dotenv_path = Path(path or os.getenv("USERSPACE_DOTENV_PATH", DEFAULT_DOTENV_PATH))
+    if not dotenv_path.exists():
+        return
+
+    try:
+        lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+def _normalize_base_url(value: str, default: str) -> str:
+    normalized = value.strip() or default
+    return normalized.rstrip("/")
 
 
 def _load_raw_config(config_path: str) -> dict[str, Any]:
@@ -133,6 +168,8 @@ def _build_profiles(source: dict[str, Any]) -> dict[str, STTProfileSettings]:
 
 
 def load_settings(config_path: str | None = None) -> Settings:
+    _load_dotenv_into_environ()
+
     path = config_path or os.getenv("USERSPACE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
     raw = _load_raw_config(path)
     auth = _safe_dict(raw.get("auth"))
@@ -150,6 +187,13 @@ def load_settings(config_path: str | None = None) -> Settings:
         host=str(server.get("host", "127.0.0.1")),
         port=int(server.get("port", 8765)),
         env=str(server.get("env", "dev")),
+        auth_api_base=_normalize_base_url(
+            os.getenv(
+                "AUTH_API_BASE",
+                str(server.get("auth_api_base", DEFAULT_AUTH_API_BASE)),
+            ),
+            DEFAULT_AUTH_API_BASE,
+        ),
         auth_username=str(auth.get("username", "admin")),
         auth_password=str(auth.get("password", "jarvis")),
         auth_jwt_secret=str(auth.get("jwt_secret", "jarvis-secret-key-change-me")),

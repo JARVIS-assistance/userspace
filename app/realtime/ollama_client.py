@@ -1,4 +1,5 @@
 """JARVIS Core LLM 클라이언트 — 모델 설정 관리 + SSE 스트리밍."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── 모델 설정 ──────────────────────────────────────────
+
 
 @dataclass
 class ModelConfig:
@@ -71,9 +73,10 @@ class ModelConfig:
 
 # ── 클라이언트 설정 ────────────────────────────────────
 
+
 @dataclass
 class OllamaConfig:
-    base_url: str = "http://127.0.0.1:8001"
+    base_url: str = "https://qwen.breakpack.cc/"
     timeout: float = 60.0
     auth_token: str = ""
 
@@ -128,7 +131,9 @@ class OllamaClient:
         """GET /chat/model-config → 모델 목록 조회."""
         session = await self._get_session()
         try:
-            async with session.get("/chat/model-config", headers=self._auth_headers()) as resp:
+            async with session.get(
+                "/chat/model-config", headers=self._auth_headers()
+            ) as resp:
                 if resp.status != 200:
                     logger.error(f"모델 목록 조회 실패: {resp.status}")
                     return []
@@ -243,13 +248,13 @@ class OllamaClient:
                         continue
 
                     if line.startswith("event:"):
-                        current_event = line[len("event:"):].strip()
+                        current_event = line[len("event:") :].strip()
                         continue
 
                     if not line.startswith("data:"):
                         continue
 
-                    data_str = line[len("data:"):].strip()
+                    data_str = line[len("data:") :].strip()
                     try:
                         data = json.loads(data_str)
                     except json.JSONDecodeError:
@@ -322,7 +327,9 @@ class OllamaClient:
             confirm=confirm,
         ):
             if event.type == "conversation.delta":
-                yield StreamChunk(text=str(event.payload.get("text", "")), is_done=False)
+                yield StreamChunk(
+                    text=str(event.payload.get("text", "")), is_done=False
+                )
             elif event.type == "conversation.done":
                 yield StreamChunk(
                     text=str(event.payload.get("text", "")),

@@ -1,6 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-const AUTH_BASE_URL = "http://127.0.0.1:8001";
+const AUTH_BASE_URL_FALLBACK = "http://127.0.0.1:8001";
+
+async function resolveAuthBaseUrl(): Promise<string> {
+    try {
+        const bridge = (window as any).jarvisBridge;
+        if (bridge?.getUserspaceConfig) {
+            const config = await bridge.getUserspaceConfig();
+            const candidate =
+                typeof config?.authApiBase === "string"
+                    ? config.authApiBase.trim()
+                    : "";
+            if (candidate) return candidate.replace(/\/+$/, "");
+        }
+    } catch (_) {}
+
+    return AUTH_BASE_URL_FALLBACK;
+}
 
 type Mode = "login" | "register";
 
@@ -47,7 +63,8 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
             }
 
             try {
-                const res = await fetch(`${AUTH_BASE_URL}/auth/me`, {
+                const authBaseUrl = await resolveAuthBaseUrl();
+                const res = await fetch(`${authBaseUrl}/auth/me`, {
                     headers: { Authorization: `Bearer ${stored}` },
                 });
                 if (res.ok) {
@@ -80,9 +97,10 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         setError("");
 
         try {
+            const authBaseUrl = await resolveAuthBaseUrl();
             if (mode === "register") {
                 // ── Register ──
-                const regRes = await fetch(`${AUTH_BASE_URL}/auth/signup`, {
+                const regRes = await fetch(`${authBaseUrl}/auth/signup`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -104,7 +122,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
                 }
             } else {
                 // ── Login ──
-                const res = await fetch(`${AUTH_BASE_URL}/auth/login`, {
+                const res = await fetch(`${authBaseUrl}/auth/login`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
