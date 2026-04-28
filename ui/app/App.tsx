@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import SandParticles, { type ViewMode } from "./SandParticles";
 import SettingsModal from "./SettingsModal";
 
-const USERSPACE_WS_FALLBACK = "ws://127.0.0.1:8765/ws";
 const SAMPLE_RATE = 16000;
 const CHUNK_SIZE = 4096;
 const FFT_SIZE = 256;
@@ -93,7 +92,7 @@ export default function App({ token, onLogout }: AppProps) {
     useEffect(() => {
         let destroyed = false;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
-        let wsUrl = USERSPACE_WS_FALLBACK;
+        let wsUrl = "";
 
         const connect = async () => {
             if (destroyed) return;
@@ -103,9 +102,20 @@ export default function App({ token, onLogout }: AppProps) {
                 const config = bridge?.getUserspaceConfig
                     ? await bridge.getUserspaceConfig()
                     : null;
-                if (config?.host && config?.port)
+                if (typeof config?.wsUrl === "string" && config.wsUrl.trim()) {
+                    wsUrl = config.wsUrl.trim();
+                } else if (config?.host && config?.port) {
                     wsUrl = `ws://${config.host}:${config.port}/ws`;
+                }
             } catch (_) {}
+
+            if (!wsUrl) {
+                setWsStatus("disconnected");
+                if (!destroyed) {
+                    retryTimer = setTimeout(connect, 2000);
+                }
+                return;
+            }
 
             // Append JWT token as query parameter
             const sep = wsUrl.includes("?") ? "&" : "?";

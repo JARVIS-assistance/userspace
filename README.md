@@ -80,9 +80,13 @@ Server -> client:
 ## Config
 Main runtime config is loaded from `config.json`.
 
-Backend auth/chat API base URL is loaded from `.env`:
+API URL settings are loaded from `.env`:
 ```bash
+USERSPACE_HOST=127.0.0.1
+USERSPACE_PORT=8765
 AUTH_API_BASE=http://127.0.0.1:8001
+OLLAMA_BASE_URL=http://127.0.0.1:8001
+# USERSPACE_WS_URL=ws://127.0.0.1:8765/ws
 ```
 
 To use a different file:
