@@ -18,8 +18,6 @@ from app.realtime.ollama_client import OllamaConfig
 from app.stt.engine import LocalWhisperEngine
 from app.stt.session import STTSession
 
-AUTH_API_BASE = "http://127.0.0.1:8001"
-
 app = FastAPI(title="JARVIS Userspace", version="0.1.0")
 actions = ActionRegistry()
 chat = RealtimeChatClient()
@@ -47,7 +45,7 @@ async def _verify_external_token(token: str) -> dict | None:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             res = await client.get(
-                f"{AUTH_API_BASE}/auth/me",
+                f"{settings.auth_api_base}/auth/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
             if res.status_code == 200:

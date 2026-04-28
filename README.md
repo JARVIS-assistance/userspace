@@ -17,6 +17,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp config.json.example config.json
+cp .env.example .env
 python run.py
 ```
 
@@ -78,6 +79,11 @@ Server -> client:
 
 ## Config
 Main runtime config is loaded from `config.json`.
+
+Backend auth/chat API base URL is loaded from `.env`:
+```bash
+AUTH_API_BASE=http://127.0.0.1:8001
+```
 
 To use a different file:
 ```bash

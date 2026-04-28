@@ -23,6 +23,7 @@ def start_electron(userspace_root: str) -> subprocess.Popen | None:
         **os.environ,
         "USERSPACE_HOST": settings.host,
         "USERSPACE_PORT": str(settings.port),
+        "AUTH_API_BASE": settings.auth_api_base,
     }
 
     try:
