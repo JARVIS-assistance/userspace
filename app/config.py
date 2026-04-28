@@ -10,6 +10,7 @@ from typing import Any
 DEFAULT_CONFIG_PATH = "config.json"
 DEFAULT_DOTENV_PATH = ".env"
 DEFAULT_AUTH_API_BASE = "http://127.0.0.1:8001"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:8001"
 DEFAULT_STT_PROFILES: dict[str, dict[str, Any]] = {
     "default": {
         "frame_ms": 20,
@@ -69,13 +70,13 @@ class STTProfileSettings:
 
 @dataclass(frozen=True)
 class OllamaSettings:
-    base_url: str = "http://127.0.0.1:8001"
+    base_url: str = DEFAULT_OLLAMA_BASE_URL
     timeout: float = 60.0
 
     @classmethod
     def from_mapping(cls, source: dict[str, Any]) -> "OllamaSettings":
         return cls(
-            base_url=str(source.get("base_url", "http://127.0.0.1:8001")),
+            base_url=str(source.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
             timeout=float(source.get("timeout", 60.0)),
         )
 
@@ -182,18 +183,33 @@ def load_settings(config_path: str | None = None) -> Settings:
     if default_profile not in profiles:
         default_profile = "default"
 
+    host = str(os.getenv("USERSPACE_HOST", str(server.get("host", "127.0.0.1")))).strip()
+    if not host:
+        host = "127.0.0.1"
+    port = int(os.getenv("USERSPACE_PORT", str(server.get("port", 8765))))
+
+    auth_api_base = _normalize_base_url(
+        os.getenv(
+            "AUTH_API_BASE",
+            str(server.get("auth_api_base", DEFAULT_AUTH_API_BASE)),
+        ),
+        DEFAULT_AUTH_API_BASE,
+    )
+    ollama_base_url = _normalize_base_url(
+        os.getenv(
+            "OLLAMA_BASE_URL",
+            str(ollama_raw.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
+        ),
+        DEFAULT_OLLAMA_BASE_URL,
+    )
+    ollama_timeout = float(ollama_raw.get("timeout", 60.0))
+
     return Settings(
         config_path=path,
-        host=str(server.get("host", "127.0.0.1")),
-        port=int(server.get("port", 8765)),
+        host=host,
+        port=port,
         env=str(server.get("env", "dev")),
-        auth_api_base=_normalize_base_url(
-            os.getenv(
-                "AUTH_API_BASE",
-                str(server.get("auth_api_base", DEFAULT_AUTH_API_BASE)),
-            ),
-            DEFAULT_AUTH_API_BASE,
-        ),
+        auth_api_base=auth_api_base,
         auth_username=str(auth.get("username", "admin")),
         auth_password=str(auth.get("password", "jarvis")),
         auth_jwt_secret=str(auth.get("jwt_secret", "jarvis-secret-key-change-me")),
@@ -207,7 +223,7 @@ def load_settings(config_path: str | None = None) -> Settings:
         stt_profiles=profiles,
         stt_emit_debug_state=bool(stt.get("emit_debug_state", False)),
         stt_cpu_threads=int(stt.get("cpu_threads", 4)),
-        ollama=OllamaSettings.from_mapping(ollama_raw),
+        ollama=OllamaSettings(base_url=ollama_base_url, timeout=ollama_timeout),
     )
 
 

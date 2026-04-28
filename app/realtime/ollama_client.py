@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -73,10 +74,16 @@ class ModelConfig:
 
 # ── 클라이언트 설정 ────────────────────────────────────
 
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:8001"
+
+
+def _default_ollama_base_url() -> str:
+    return str(os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL)).rstrip("/")
+
 
 @dataclass
 class OllamaConfig:
-    base_url: str = "https://qwen.breakpack.cc/"
+    base_url: str = field(default_factory=_default_ollama_base_url)
     timeout: float = 60.0
     auth_token: str = ""
 
