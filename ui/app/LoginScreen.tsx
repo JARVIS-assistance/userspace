@@ -1,21 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-const AUTH_BASE_URL_FALLBACK = "http://127.0.0.1:8001";
-
 async function resolveAuthBaseUrl(): Promise<string> {
-    try {
-        const bridge = (window as any).jarvisBridge;
-        if (bridge?.getUserspaceConfig) {
-            const config = await bridge.getUserspaceConfig();
-            const candidate =
-                typeof config?.authApiBase === "string"
-                    ? config.authApiBase.trim()
-                    : "";
-            if (candidate) return candidate.replace(/\/+$/, "");
-        }
-    } catch (_) {}
+    const bridge = (window as any).jarvisBridge;
+    if (!bridge?.getUserspaceConfig) {
+        throw new Error("Userspace config bridge is unavailable");
+    }
 
-    return AUTH_BASE_URL_FALLBACK;
+    const config = await bridge.getUserspaceConfig();
+    const candidate =
+        typeof config?.authApiBase === "string" ? config.authApiBase.trim() : "";
+    if (!candidate) {
+        throw new Error("AUTH_API_BASE is not configured");
+    }
+
+    return candidate.replace(/\/+$/, "");
 }
 
 type Mode = "login" | "register";

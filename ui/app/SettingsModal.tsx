@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 
-const API_BASE_FALLBACK = "http://127.0.0.1:8001";
 const STORAGE_KEY = "jarvis_settings";
 
 // ── 타입 ──
@@ -65,19 +64,19 @@ const EMPTY_MODEL: ModelConfig = {
 };
 
 async function resolveApiBase(): Promise<string> {
-    try {
-        const bridge = (window as any).jarvisBridge;
-        if (bridge?.getUserspaceConfig) {
-            const config = await bridge.getUserspaceConfig();
-            const candidate =
-                typeof config?.authApiBase === "string"
-                    ? config.authApiBase.trim()
-                    : "";
-            if (candidate) return candidate.replace(/\/+$/, "");
-        }
-    } catch (_) {}
+    const bridge = (window as any).jarvisBridge;
+    if (!bridge?.getUserspaceConfig) {
+        throw new Error("Userspace config bridge is unavailable");
+    }
 
-    return API_BASE_FALLBACK;
+    const config = await bridge.getUserspaceConfig();
+    const candidate =
+        typeof config?.authApiBase === "string" ? config.authApiBase.trim() : "";
+    if (!candidate) {
+        throw new Error("AUTH_API_BASE is not configured");
+    }
+
+    return candidate.replace(/\/+$/, "");
 }
 
 function loadLocal(): SettingsData {
@@ -355,7 +354,7 @@ function ModelForm({
                     style={css.input}
                     value={model.endpoint || ""}
                     onChange={(e) => set("endpoint", e.target.value)}
-                    placeholder="https://qwen.breakpack.cc/v1/chat/completions"
+                    placeholder="https://your-api-host/v1/chat/completions"
                 />
             </div>
             <div style={{ marginBottom: 12 }}>

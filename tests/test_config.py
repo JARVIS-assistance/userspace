@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.config import load_settings
 
@@ -36,6 +38,33 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.stt_model_name, "base")
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].frame_ms, 8)
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].partial_interval_ms, 160)
+
+    def test_env_overrides_api_base_urls(self) -> None:
+        payload = {
+            "server": {"auth_api_base": "http://config-auth.local/"},
+            "ollama": {"base_url": "http://config-ollama.local/"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AUTH_API_BASE": "https://auth.example.com/",
+                    "OLLAMA_BASE_URL": "https://ollama.example.com/",
+                    "USERSPACE_HOST": "10.10.0.8",
+                    "USERSPACE_PORT": "9876",
+                },
+                clear=False,
+            ):
+                settings = load_settings(str(path))
+
+        self.assertEqual(settings.host, "10.10.0.8")
+        self.assertEqual(settings.port, 9876)
+        self.assertEqual(settings.auth_api_base, "https://auth.example.com")
+        self.assertEqual(settings.ollama.base_url, "https://ollama.example.com")
 
 
 if __name__ == "__main__":
