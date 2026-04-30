@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uuid
 
 import httpx
@@ -12,16 +11,13 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from app.actions.api_client import ClientActionAPIClient
-from app.actions.browser_resolution import (
-    choose_best_link,
-    extract_current_browser_open_query,
-)
 from app.actions.dispatcher import ActionDispatcher
-from app.actions.models import ClientAction, PendingClientAction
+from app.actions.models import PendingClientAction
 from app.actions.poller import ActionPoller
 from app.actions.policy import actions_to_dict, persist_actions_patch
 from app.actions.registry import ActionRegistry
 from app.actions.setup import register_default_handlers
+from app.client_context import build_runtime_headers
 from app.config import load_settings, settings as _initial_settings
 
 # 라이브에서 갱신 가능한 settings (config.json 저장 후 reload 가능).
@@ -118,6 +114,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         user.get("user_id") if isinstance(user, dict) else None
     ) or "anon"
     client_id = f"jarvis-userspace-{user_id}-{uuid.uuid4().hex[:8]}"
+    runtime_headers = build_runtime_headers(settings.actions)
     print(f"[WS] client_id={client_id}", flush=True)
 
     config = OllamaConfig(
@@ -125,6 +122,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         timeout=ollama_config.timeout,
         auth_token=token,
         client_id=client_id,
+        runtime_headers=runtime_headers,
     )
     conversation = ConversationManager(ollama_config=config)
 
@@ -134,6 +132,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         auth_token=token,
         timeout=ollama_config.timeout,
         client_id=client_id,
+        runtime_headers=runtime_headers,
     )
 
     async def emit_event(envelope: EventEnvelope) -> None:
@@ -154,259 +153,11 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         return int(time.time() * 1000)
 
     async def emit_conversation(envelope: EventEnvelope) -> None:
-        print(f"[CONV] {envelope.type}: {envelope.payload}", flush=True)
+        # Delta events arrive token-by-token and make the dev log noisy.
+        # Keep sending them to the UI, but do not print each chunk.
+        if envelope.type != "conversation.delta":
+            print(f"[CONV] {envelope.type}: {envelope.payload}", flush=True)
         await websocket.send_json(envelope.model_dump())
-
-    async def dispatch_local_action(
-        *,
-        request_id: str,
-        action: ClientAction,
-    ) -> dict:
-        action_id = f"local_{uuid.uuid4().hex}"
-        pending = PendingClientAction(
-            contract_version="1.0",
-            action_id=action_id,
-            request_id=request_id,
-            action=action,
-        )
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.action_dispatch",
-                payload={
-                    **pending.model_dump(),
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-        status, output, error = await dispatcher.dispatch(pending)
-        result = {
-            "action_id": action_id,
-            "request_id": request_id,
-            "status": status,
-            "output": output,
-            "error": error,
-            "action": action.model_dump(),
-        }
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.action_result",
-                payload={**result, "timestamp": _now_ms()},
-            )
-        )
-        return result
-
-    async def maybe_handle_current_browser_open(text: str) -> bool:
-        query = extract_current_browser_open_query(text)
-        if not query:
-            return False
-
-        request_id = f"local_req_{uuid.uuid4().hex}"
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.user",
-                payload={"text": text, "timestamp": _now_ms()},
-            )
-        )
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.state",
-                payload={
-                    "state": "processing",
-                    "previous": "idle",
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.thinking",
-                payload={
-                    "text": "현재 브라우저 링크 후보를 확인중...",
-                    "mode": "realtime",
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-
-        extract_action = ClientAction(
-            type="browser_control",
-            command="extract_dom",
-            target="active_tab",
-            args={
-                "purpose": "resolve_open_request",
-                "query": query,
-                "include_links": True,
-                "max_links": 120,
-            },
-            description=f"현재 페이지 DOM에서 '{query}' 링크 후보 추출",
-            requires_confirm=False,
-        )
-        results = [
-            await dispatch_local_action(
-                request_id=request_id,
-                action=extract_action,
-            )
-        ]
-        actions = [extract_action]
-
-        selected = None
-        if results[0]["status"] == "completed":
-            output = results[0].get("output") or {}
-            links = output.get("links") if isinstance(output, dict) else None
-            if isinstance(links, list):
-                selected = choose_best_link(
-                    [item for item in links if isinstance(item, dict)],
-                    query,
-                )
-
-        if selected:
-            href = str(selected.get("href") or "")
-            title = str(selected.get("title") or selected.get("text") or query)
-            open_action = ClientAction(
-                type="open_url",
-                target=href,
-                args={"browser": "chrome"},
-                description=f"현재 브라우저에서 '{title[:80]}' 열기",
-                requires_confirm=False,
-            )
-            actions.append(open_action)
-            results.append(
-                await dispatch_local_action(
-                    request_id=request_id,
-                    action=open_action,
-                )
-            )
-            done_text = (
-                f"현재 페이지에서 '{query}'에 가장 가까운 링크를 열었습니다."
-            )
-        elif results[0]["status"] == "completed":
-            done_text = f"현재 페이지에서 '{query}'에 맞는 링크를 찾지 못했습니다."
-        else:
-            done_text = "현재 브라우저 페이지를 확인하지 못했습니다."
-
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.actions",
-                payload={
-                    "request_id": request_id,
-                    "total": len(actions),
-                    "items": [action.model_dump() for action in actions],
-                    "results": results,
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.done",
-                payload={
-                    "text": done_text,
-                    "summary": done_text,
-                    "has_actions": True,
-                    "action_count": len(actions),
-                    "action_results": results,
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-        await emit_conversation(
-            EventEnvelope(
-                type="conversation.state",
-                payload={
-                    "state": "idle",
-                    "previous": "processing",
-                    "timestamp": _now_ms(),
-                },
-            )
-        )
-        return True
-
-    def sanitize_pending_action(pending: PendingClientAction) -> PendingClientAction:
-        """Tolerate backend action quirks before dispatching to userspace handlers."""
-        action = pending.action
-        action_type = str(action.type)
-        command = (action.command or "").lower()
-        updates: dict = {}
-
-        if action_type == "browser_control" and command == "select_result":
-            args = dict(action.args or {})
-            try:
-                index = int(args.get("index", 1))
-            except (TypeError, ValueError):
-                index = 1
-            # Backend sometimes emits 0 for "first result"; contract is 1-based.
-            if index < 1:
-                args["index"] = 1
-            updates["args"] = args
-
-        if action_type == "open_url" and action.target:
-            cleaned_target = _clean_google_search_url(action.target)
-            if cleaned_target != action.target:
-                updates["target"] = cleaned_target
-                args = dict(action.args or {})
-                raw_query = str(args.get("query") or "")
-                cleaned_query = _strip_retry_prefix(raw_query)
-                if cleaned_query != raw_query:
-                    args["query"] = cleaned_query
-                    updates["args"] = args
-
-        safe_no_confirm = (
-            action_type == "open_url"
-            or (
-                action_type == "browser_control"
-                and command in {
-                    "select_result",
-                    "extract_dom",
-                    "back",
-                    "forward",
-                    "reload",
-                    "open",
-                    "open_url",
-                    "navigate",
-                }
-            )
-        )
-        if safe_no_confirm and action.requires_confirm:
-            updates["requires_confirm"] = False
-
-        if not updates:
-            return pending
-        return pending.model_copy(
-            update={"action": action.model_copy(update=updates)}
-        )
-
-    def _clean_google_search_url(url: str) -> str:
-        try:
-            parts = urlsplit(url)
-        except ValueError:
-            return url
-        if "google." not in parts.netloc or parts.path != "/search":
-            return url
-        pairs = parse_qsl(parts.query, keep_blank_values=True)
-        changed = False
-        next_pairs = []
-        for key, value in pairs:
-            if key == "q":
-                cleaned = _strip_retry_prefix(value)
-                if cleaned != value:
-                    changed = True
-                next_pairs.append((key, cleaned))
-            else:
-                next_pairs.append((key, value))
-        if not changed:
-            return url
-        return urlunsplit(
-            (
-                parts.scheme,
-                parts.netloc,
-                parts.path,
-                urlencode(next_pairs),
-                parts.fragment,
-            )
-        )
-
-    def _strip_retry_prefix(value: str) -> str:
-        return str(value or "").strip().removeprefix("다시 ").strip()
 
     async def forward_conversation(events) -> None:
         """ConversationManager 이벤트 → WS 송신 + action dispatch."""
@@ -420,15 +171,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                     poller.start()
                     poller.wake()
                 else:
-                    pending = sanitize_pending_action(pending)
-                    payload = pending.model_dump()
-                    payload["timestamp"] = ce.payload.get("timestamp", _now_ms())
-                    await emit_conversation(
-                        EventEnvelope(
-                            type="conversation.action_dispatch",
-                            payload=payload,
-                        )
-                    )
+                    await emit_conversation(ce)
                     await poller.dispatch_pending_now(pending)
                 continue
 
@@ -448,8 +191,6 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                 text = str(payload.get("text", "")).strip()
                 if text:
                     print(f"[CHAT] {text}", flush=True)
-                    if await maybe_handle_current_browser_open(text):
-                        continue
                     await forward_conversation(conversation.handle_stt_final(text))
                 continue
 
@@ -486,6 +227,8 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
 
                 # main 모듈의 settings 갱신 + dispatcher hot-apply.
                 _reload_settings_global()
+                runtime_headers.clear()
+                runtime_headers.update(build_runtime_headers(settings.actions))
                 new_enabled = set(settings.actions.enabled_types)
                 dispatcher.set_policy(
                     enabled_types=(new_enabled if settings.actions.enabled_types else None),

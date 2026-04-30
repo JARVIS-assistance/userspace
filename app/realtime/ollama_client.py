@@ -43,6 +43,7 @@ class OllamaConfig:
     timeout: float = 60.0
     auth_token: str = ""
     client_id: str = ""
+    runtime_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +75,7 @@ class OllamaClient:
             h["Authorization"] = f"Bearer {self.config.auth_token}"
         if self.config.client_id:
             h["x-client-id"] = self.config.client_id
+        h.update(self.config.runtime_headers)
         return h
 
     async def close(self) -> None:

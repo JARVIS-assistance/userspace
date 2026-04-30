@@ -39,6 +39,12 @@ def make_browser_control(enabled: bool):
         if command == "extract_dom":
             return await _extract_dom(action)
 
+        if command == "click_element":
+            return await _click_element(action)
+
+        if command == "type_element":
+            return await _type_element(action)
+
         if sys.platform != "darwin":
             raise HandlerError(f"browser_control {command!r} not supported on {sys.platform}")
 
@@ -158,6 +164,83 @@ async def _extract_dom(action: ClientAction) -> dict[str, Any]:
     raise HandlerError(error, output=output_base)
 
 
+async def _click_element(action: ClientAction) -> dict[str, Any]:
+    args = action.args or {}
+    output_base = {"command": "click_element"}
+    try:
+        ai_id = int(args.get("ai_id"))
+    except (TypeError, ValueError) as e:
+        raise HandlerError(
+            "invalid click_element ai_id",
+            output={**output_base, "ai_id": args.get("ai_id")},
+        ) from e
+    if ai_id < 1:
+        raise HandlerError(
+            "invalid click_element ai_id",
+            output={**output_base, "ai_id": ai_id},
+        )
+    result = await _run_browser_javascript_action(
+        command="click_element",
+        javascript=_click_element_javascript(ai_id),
+        output_base={**output_base, "ai_id": ai_id},
+    )
+    result["command"] = "click_element"
+    result["ai_id"] = ai_id
+    return result
+
+
+async def _type_element(action: ClientAction) -> dict[str, Any]:
+    args = action.args or {}
+    output_base = {"command": "type_element"}
+    try:
+        ai_id = int(args.get("ai_id"))
+    except (TypeError, ValueError) as e:
+        raise HandlerError(
+            "invalid type_element ai_id",
+            output={**output_base, "ai_id": args.get("ai_id")},
+        ) from e
+    if ai_id < 1:
+        raise HandlerError(
+            "invalid type_element ai_id",
+            output={**output_base, "ai_id": ai_id},
+        )
+    text = str(args.get("text") or args.get("value") or action.payload or "")
+    result = await _run_browser_javascript_action(
+        command="type_element",
+        javascript=_type_element_javascript(ai_id=ai_id, text=text),
+        output_base={**output_base, "ai_id": ai_id},
+    )
+    result["command"] = "type_element"
+    result["ai_id"] = ai_id
+    return result
+
+
+async def _run_browser_javascript_action(
+    *,
+    command: str,
+    javascript: str,
+    output_base: dict[str, Any],
+) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HandlerError(
+            f"browser_control {command} not supported on {sys.platform}",
+            output=output_base,
+        )
+    errors: list[str] = []
+    for browser in ("Google Chrome", "Safari"):
+        try:
+            result = await _execute_browser_javascript(browser, javascript)
+        except RuntimeError as e:
+            errors.append(f"{browser}: {e}")
+            continue
+        result["browser"] = browser
+        return result
+    error = _summarize_browser_javascript_errors(errors, command) if errors else (
+        f"{command} failed"
+    )
+    raise HandlerError(error, output=output_base)
+
+
 def _summarize_select_result_errors(errors: list[str]) -> str:
     return _summarize_browser_javascript_errors(errors, "select_result")
 
@@ -247,6 +330,7 @@ def _extract_dom_javascript(*, include_links: bool, max_links: int) -> str:
 (() => {{
   const includeLinks = {include_links_json};
   const maxLinks = {max_links};
+  let nextAiId = 1;
   const clean = (value) => (value || "").replace(/\\s+/g, " ").trim();
   const isVisible = (el) => {{
     const style = window.getComputedStyle(el);
@@ -290,19 +374,90 @@ def _extract_dom_javascript(*, include_links: bool, max_links: int) -> str:
       }})
       .filter((item) => shouldKeep(item.element, item.href, item.text))
       .slice(0, maxLinks)
-      .map((item) => ({{
-        text: item.text.slice(0, 240),
-        href: item.href,
-        title: item.title.slice(0, 240),
-        ariaLabel: item.ariaLabel.slice(0, 240)
-      }}))
+      .map((item) => {{
+        const aiId = nextAiId++;
+        item.element.setAttribute("data-jarvis-ai-id", String(aiId));
+        return {{
+          ai_id: aiId,
+          text: item.text.slice(0, 240),
+          href: item.href,
+          title: item.title.slice(0, 240),
+          ariaLabel: item.ariaLabel.slice(0, 240)
+        }};
+      }})
     : [];
+  const elements = Array.from(document.querySelectorAll('input, textarea, select, button, [role="button"], [role="textbox"], [contenteditable="true"]'))
+    .filter((el) => isVisible(el))
+    .slice(0, maxLinks)
+    .map((el) => {{
+      const aiId = nextAiId++;
+      el.setAttribute("data-jarvis-ai-id", String(aiId));
+      const tag = (el.tagName || "").toLowerCase();
+      const id = el.getAttribute("id") || "";
+      const ariaLabel = clean(el.getAttribute("aria-label") || "");
+      let label = ariaLabel;
+      if (!label && id) {{
+        const labelEl = document.querySelector(`label[for="${{CSS.escape(id)}}"]`);
+        label = clean(labelEl ? labelEl.innerText || labelEl.textContent || "" : "");
+      }}
+      if (!label) {{
+        const parentLabel = el.closest("label");
+        label = clean(parentLabel ? parentLabel.innerText || parentLabel.textContent || "" : "");
+      }}
+      return {{
+        ai_id: aiId,
+        tag,
+        role: el.getAttribute("role") || "",
+        type: el.getAttribute("type") || "",
+        text: clean(el.innerText || el.textContent || el.value || "").slice(0, 240),
+        placeholder: clean(el.getAttribute("placeholder") || ""),
+        label: label.slice(0, 240),
+        ariaLabel
+      }};
+    }});
   return JSON.stringify({{
     ok: true,
     url: location.href,
     title: document.title || "",
-    links
+    links,
+    elements
   }});
+}})();
+"""
+
+
+def _click_element_javascript(ai_id: int) -> str:
+    return f"""
+(() => {{
+  const aiId = {ai_id};
+  const el = document.querySelector(`[data-jarvis-ai-id="${{aiId}}"]`);
+  if (!el) return JSON.stringify({{ ok: false, error: "element not found" }});
+  const href = el.href || el.getAttribute("href") || "";
+  const title = (el.innerText || el.textContent || el.getAttribute("title") || "").trim().slice(0, 120);
+  el.scrollIntoView({{ block: "center", inline: "center" }});
+  el.click();
+  return JSON.stringify({{ ok: true, clicked: true, opened: href, title }});
+}})();
+"""
+
+
+def _type_element_javascript(*, ai_id: int, text: str) -> str:
+    return f"""
+(() => {{
+  const aiId = {ai_id};
+  const text = {json.dumps(text)};
+  const el = document.querySelector(`[data-jarvis-ai-id="${{aiId}}"]`);
+  if (!el) return JSON.stringify({{ ok: false, error: "element not found" }});
+  el.scrollIntoView({{ block: "center", inline: "center" }});
+  el.focus();
+  if (el.isContentEditable) {{
+    el.textContent = text;
+  }} else {{
+    el.value = text;
+  }}
+  el.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+  el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  return JSON.stringify({{ ok: true, typed: true, text }});
 }})();
 """
 

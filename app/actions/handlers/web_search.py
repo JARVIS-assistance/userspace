@@ -1,15 +1,13 @@
 """Web search handler.
 
-Phase 3 keeps this local and conservative: opens a search URL in a specific
-browser (default: Chrome) so the user sees results. Does not scrape.
+Per the client action contract, the frontend must not turn `web_search` into
+a browser tab. Search pages should arrive as `open_url`; current-page
+resolution should arrive as `browser_control/extract_dom`.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote_plus
-
-from app.actions.handlers._browsers import DEFAULT_BROWSER, open_in_browser
 from app.actions.handlers.base import HandlerError
 from app.actions.models import ClientAction
 
@@ -18,21 +16,14 @@ def make_web_search(enabled: bool):
     async def web_search(action: ClientAction) -> dict[str, Any]:
         if not enabled:
             raise HandlerError("web_search disabled by policy")
-        query = (action.command or action.payload or action.target or "").strip()
-        if not query:
-            raise HandlerError("missing search query")
-
-        browser = ""
-        if action.args:
-            raw = action.args.get("browser")
-            if isinstance(raw, str):
-                browser = raw
-
-        url = f"https://www.google.com/search?q={quote_plus(query)}"
-        try:
-            used = await open_in_browser(url, browser=browser or DEFAULT_BROWSER)
-        except RuntimeError as e:
-            raise HandlerError(str(e)) from e
-        return {"query": query, "opened": url, "browser": used}
+        raise HandlerError(
+            "unsupported action: web_search; use open_url for browser search pages",
+            output={
+                "type": action.type,
+                "command": action.command,
+                "target": action.target,
+                "args_keys": sorted((action.args or {}).keys()),
+            },
+        )
 
     return web_search

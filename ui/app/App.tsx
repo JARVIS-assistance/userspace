@@ -269,9 +269,7 @@ export default function App({ token, onLogout }: AppProps) {
             assistantDeltaBufferRef.current = "";
             assistantTts.speak(spokenText);
         } else if (type === "conversation.thinking") {
-            setAssistantSubtitle(
-                `${String(payload.text || "DeepThinking")} 진행중...`,
-            );
+            setAssistantSubtitle(waitingMessage());
             setAssistantSubtitleDim(true);
         } else if (type === "conversation.plan_step") {
             const status = String(payload.status || "");
@@ -295,6 +293,9 @@ export default function App({ token, onLogout }: AppProps) {
                 sharedAudioRef.state = "speaking";
             } else if (state === "processing") {
                 setConvBusy(true);
+                setIsSpeaking(true);
+                setAssistantSubtitle((current) => current || waitingMessage());
+                setAssistantSubtitleDim(true);
             } else if (state === "idle") {
                 setIsSpeaking(false);
                 setConvBusy(false);
@@ -579,4 +580,16 @@ function nextActionText(type: string, command: string, error: string): string {
         return `브라우저 작업에 실패했습니다. 기본 브라우저 또는 다른 브라우저로 다시 시도하세요.`;
     }
     return `외부 작업에 실패했습니다. ${error}`;
+}
+
+const WAITING_MESSAGES = [
+    "잠시만요!",
+    "바로 확인할게요.",
+    "처리하고 있어요.",
+    "준비 중이에요.",
+    "곧 이어서 진행할게요.",
+];
+
+function waitingMessage(): string {
+    return WAITING_MESSAGES[Math.floor(Math.random() * WAITING_MESSAGES.length)];
 }

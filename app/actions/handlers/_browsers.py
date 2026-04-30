@@ -95,7 +95,24 @@ async def _open_macos(url: str, name: str) -> str:
             f"open -a {app!r} failed rc={proc.returncode}: "
             f"{err.decode(errors='replace').strip()[:300]}"
         )
+    await _activate_macos_app(app)
     return app
+
+
+async def _activate_macos_app(app: str) -> None:
+    escaped = app.replace("\\", "\\\\").replace('"', '\\"')
+    proc = await asyncio.create_subprocess_exec(
+        "osascript",
+        "-e",
+        f'tell application "{escaped}" to activate',
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
 
 
 async def _open_linux(url: str, name: str) -> str:

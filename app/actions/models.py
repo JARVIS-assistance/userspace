@@ -45,7 +45,9 @@ ActionResultStatus = Literal["completed", "failed", "rejected", "timeout"]
 class ClientAction(BaseModel):
     """Backend가 발행하는 액션 단위 — OpenAPI ClientAction 스키마와 동일."""
 
-    type: ClientActionType
+    # Keep this permissive so unknown backend action types can still be
+    # acknowledged with a failed result instead of being dropped as malformed.
+    type: str
     command: str | None = None
     target: str | None = None
     payload: str | None = None
