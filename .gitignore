@@ -4,7 +4,12 @@
 .env
 .venv/
 .python-version
+<<<<<<< Updated upstream
 venv
+=======
+.cache/
+
+>>>>>>> Stashed changes
 # Local runtime config
 config.json
 

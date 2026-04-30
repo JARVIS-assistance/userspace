@@ -11,6 +11,24 @@ DEFAULT_CONFIG_PATH = "config.json"
 DEFAULT_DOTENV_PATH = ".env"
 DEFAULT_AUTH_API_BASE = "http://127.0.0.1:8001"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:8001"
+DEFAULT_SAFE_ACTION_TYPES = ("notify", "clipboard", "open_url")
+# 사용자 컨펌이 강제로 필요한 액션 타입 (requires_confirm=False여도 모달 띄움).
+# 백엔드 LLM이 실수로 위험한 action을 silent 실행하지 못하게 막는 안전망.
+# 기본 force-confirm 대상: 외부 부작용이 큰 type만.
+# 옵션이라 config.json에서 자유롭게 늘리고 줄일 수 있다.
+# (app_control은 'open Chrome' 같이 빈번한 케이스라 기본 제외)
+DEFAULT_FORCE_CONFIRM_TYPES = (
+    "terminal",
+    "file_write",
+    "mouse_click",
+    "mouse_drag",
+    "keyboard_type",
+    "hotkey",
+)
+# 안전 상한들
+DEFAULT_FILE_WRITE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+DEFAULT_KEYSTROKE_MAX_CHARS = 4000
+_DOTENV_VALUES: dict[str, str] = {}
 DEFAULT_STT_PROFILES: dict[str, dict[str, Any]] = {
     "default": {
         "frame_ms": 20,
@@ -82,6 +100,103 @@ class OllamaSettings:
 
 
 @dataclass(frozen=True)
+class FileWriteSettings:
+    allowed_paths: tuple[str, ...] = ()
+    max_bytes: int = DEFAULT_FILE_WRITE_MAX_BYTES
+
+
+@dataclass(frozen=True)
+class TerminalSettings:
+    enabled: bool = False
+    allowed_commands: tuple[str, ...] = ()
+    cwd_allowlist: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PhysicalInputSettings:
+    enabled: bool = False
+    max_keystroke_chars: int = DEFAULT_KEYSTROKE_MAX_CHARS
+
+
+@dataclass(frozen=True)
+class ToggleSettings:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class ScreenshotSettings:
+    enabled: bool = False
+    allowed_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ActionSettings:
+    enabled_types: tuple[str, ...] = DEFAULT_SAFE_ACTION_TYPES
+    force_confirm_types: tuple[str, ...] = DEFAULT_FORCE_CONFIRM_TYPES
+    file_write: FileWriteSettings = FileWriteSettings()
+    terminal: TerminalSettings = TerminalSettings()
+    physical_input: PhysicalInputSettings = PhysicalInputSettings()
+    app_control: ToggleSettings = ToggleSettings()
+    browser_control: ToggleSettings = ToggleSettings()
+    web_search: ToggleSettings = ToggleSettings()
+    screenshot: ScreenshotSettings = ScreenshotSettings()
+
+    @classmethod
+    def from_mapping(cls, source: dict[str, Any]) -> "ActionSettings":
+        def _string_tuple(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+            if not isinstance(value, list):
+                return default
+            return tuple(str(v).strip() for v in value if str(v).strip())
+
+        enabled_types = _string_tuple(
+            source.get("enabled_types"), DEFAULT_SAFE_ACTION_TYPES
+        )
+        force_confirm_types = _string_tuple(
+            source.get("force_confirm_types"), DEFAULT_FORCE_CONFIRM_TYPES
+        )
+
+        file_write = _safe_dict(source.get("file_write"))
+        terminal = _safe_dict(source.get("terminal"))
+        physical_input = _safe_dict(source.get("physical_input"))
+        screenshot = _safe_dict(source.get("screenshot"))
+
+        def _toggle(name: str) -> ToggleSettings:
+            raw = _safe_dict(source.get(name))
+            return ToggleSettings(enabled=bool(raw.get("enabled", False)))
+
+        return cls(
+            enabled_types=enabled_types,
+            force_confirm_types=force_confirm_types,
+            file_write=FileWriteSettings(
+                allowed_paths=_string_tuple(file_write.get("allowed_paths"), ()),
+                max_bytes=int(
+                    file_write.get("max_bytes", DEFAULT_FILE_WRITE_MAX_BYTES)
+                ),
+            ),
+            terminal=TerminalSettings(
+                enabled=bool(terminal.get("enabled", False)),
+                allowed_commands=_string_tuple(terminal.get("allowed_commands"), ()),
+                cwd_allowlist=_string_tuple(terminal.get("cwd_allowlist"), ()),
+            ),
+            physical_input=PhysicalInputSettings(
+                enabled=bool(physical_input.get("enabled", False)),
+                max_keystroke_chars=int(
+                    physical_input.get(
+                        "max_keystroke_chars", DEFAULT_KEYSTROKE_MAX_CHARS
+                    )
+                ),
+            ),
+            app_control=_toggle("app_control"),
+            browser_control=_toggle("browser_control"),
+            web_search=_toggle("web_search"),
+            screenshot=ScreenshotSettings(
+                enabled=bool(screenshot.get("enabled", False)),
+                allowed_paths=_string_tuple(screenshot.get("allowed_paths"), ()),
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Settings:
     config_path: str
     host: str
@@ -102,6 +217,7 @@ class Settings:
     stt_emit_debug_state: bool
     stt_cpu_threads: int
     ollama: OllamaSettings
+    actions: ActionSettings
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
@@ -132,7 +248,18 @@ def _load_dotenv_into_environ(path: str | None = None) -> None:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
             value = value[1:-1]
 
-        os.environ.setdefault(key, value)
+        if key not in os.environ:
+            os.environ[key] = value
+            _DOTENV_VALUES[key] = value
+
+
+def _env_or_config(key: str, default: str, *, ignore_dotenv: bool) -> str:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    if ignore_dotenv and _DOTENV_VALUES.get(key) == value:
+        return default
+    return value
 
 
 def _normalize_base_url(value: str, default: str) -> str:
@@ -169,7 +296,8 @@ def _build_profiles(source: dict[str, Any]) -> dict[str, STTProfileSettings]:
 
 
 def load_settings(config_path: str | None = None) -> Settings:
-    _load_dotenv_into_environ()
+    if config_path is None:
+        _load_dotenv_into_environ()
 
     path = config_path or os.getenv("USERSPACE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
     raw = _load_raw_config(path)
@@ -177,28 +305,45 @@ def load_settings(config_path: str | None = None) -> Settings:
     server = _safe_dict(raw.get("server"))
     stt = _safe_dict(raw.get("stt"))
     ollama_raw = _safe_dict(raw.get("ollama"))
+    actions_raw = _safe_dict(raw.get("actions"))
     profiles = _build_profiles(stt)
 
     default_profile = str(stt.get("default_profile", "default"))
     if default_profile not in profiles:
         default_profile = "default"
 
-    host = str(os.getenv("USERSPACE_HOST", str(server.get("host", "127.0.0.1")))).strip()
+    ignore_dotenv = config_path is not None
+
+    host = str(
+        _env_or_config(
+            "USERSPACE_HOST",
+            str(server.get("host", "127.0.0.1")),
+            ignore_dotenv=ignore_dotenv,
+        )
+    ).strip()
     if not host:
         host = "127.0.0.1"
-    port = int(os.getenv("USERSPACE_PORT", str(server.get("port", 8765))))
+    port = int(
+        _env_or_config(
+            "USERSPACE_PORT",
+            str(server.get("port", 8765)),
+            ignore_dotenv=ignore_dotenv,
+        )
+    )
 
     auth_api_base = _normalize_base_url(
-        os.getenv(
+        _env_or_config(
             "AUTH_API_BASE",
             str(server.get("auth_api_base", DEFAULT_AUTH_API_BASE)),
+            ignore_dotenv=ignore_dotenv,
         ),
         DEFAULT_AUTH_API_BASE,
     )
     ollama_base_url = _normalize_base_url(
-        os.getenv(
+        _env_or_config(
             "OLLAMA_BASE_URL",
             str(ollama_raw.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
+            ignore_dotenv=ignore_dotenv,
         ),
         DEFAULT_OLLAMA_BASE_URL,
     )
@@ -224,6 +369,7 @@ def load_settings(config_path: str | None = None) -> Settings:
         stt_emit_debug_state=bool(stt.get("emit_debug_state", False)),
         stt_cpu_threads=int(stt.get("cpu_threads", 4)),
         ollama=OllamaSettings(base_url=ollama_base_url, timeout=ollama_timeout),
+        actions=ActionSettings.from_mapping(actions_raw),
     )
 
 

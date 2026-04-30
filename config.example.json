@@ -1,0 +1,81 @@
+{
+  "_comment": "JARVIS userspace 설정 예시. config.json에 복사 후 수정해서 사용.",
+
+  "auth": {
+    "username": "admin",
+    "password": "jarvis",
+    "jwt_secret": "change-me",
+    "token_expire_hours": 24
+  },
+
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "env": "dev"
+  },
+
+  "ollama": {
+    "base_url": "http://127.0.0.1:8001",
+    "timeout": 60.0
+  },
+
+  "stt": {
+    "model_name": "base",
+    "device": "cpu",
+    "compute_type": "int8",
+    "cpu_threads": 6,
+    "language": "ko",
+    "sample_rate": 16000,
+    "default_profile": "default",
+    "emit_debug_state": false
+  },
+
+  "actions": {
+    "_comment_enabled_types": "이 목록에 없는 type은 dispatcher가 status=failed로 거부. 비우면 모두 허용.",
+    "enabled_types": [
+      "notify",
+      "clipboard",
+      "open_url",
+      "browser_control",
+      "app_control",
+      "web_search"
+    ],
+
+    "_comment_force_confirm_types": "requires_confirm=False여도 무조건 사용자 확인을 받는 type 목록. 백엔드 LLM 실수로 위험 액션이 silent 실행되는 것을 막는 안전망.",
+    "force_confirm_types": [
+      "terminal",
+      "file_write",
+      "mouse_click",
+      "mouse_drag",
+      "keyboard_type",
+      "hotkey"
+    ],
+
+    "file_write": {
+      "_comment": "쓰기 가능 경로(prefix). 외부 경로는 status=failed.",
+      "allowed_paths": ["~/Documents/jarvis-out"],
+      "max_bytes": 5242880
+    },
+
+    "terminal": {
+      "_comment": "shell 실행. enabled=false면 무조건 거부. allowed_commands 매칭 + cwd_allowlist 강제.",
+      "enabled": false,
+      "allowed_commands": ["ls", "pwd", "git status"],
+      "cwd_allowlist": ["~/Documents/jarvis-out"]
+    },
+
+    "physical_input": {
+      "_comment": "마우스/키보드 합성 입력. macOS Accessibility 권한 필요.",
+      "enabled": false,
+      "max_keystroke_chars": 4000
+    },
+
+    "app_control": { "enabled": true },
+    "browser_control": { "enabled": true },
+    "web_search": { "enabled": true },
+    "screenshot": {
+      "enabled": false,
+      "allowed_paths": ["~/Documents/jarvis-out"]
+    }
+  }
+}
