@@ -6,9 +6,11 @@ contextBridge.exposeInMainWorld('jarvisBridge', {
   // Userspace backend
   getUserspaceConfig: () => ipcRenderer.invoke('userspace:get-config'),
   healthcheckUserspace: () => ipcRenderer.invoke('userspace:health'),
+  synthesizeTts: (payload) => ipcRenderer.invoke('tts:synthesize', payload),
 
   // Window controls
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
+  minimizeNow: () => ipcRenderer.invoke('window:minimize-now'),
   closeWindow: () => ipcRenderer.send('window:close'),
   restoreWindow: () => ipcRenderer.send('window:restore'),
   minimizeAnimationDone: () => ipcRenderer.send('window:minimize-animation-done'),

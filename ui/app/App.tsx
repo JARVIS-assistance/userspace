@@ -1,29 +1,26 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import SandParticles, { type ViewMode } from "./SandParticles";
 import SettingsModal from "./SettingsModal";
+import ActionConfirmModal from "./actions/ActionConfirmModal";
+import ActionFeed from "./actions/ActionFeed";
+import { cleanAssistantText, displayDoneText, displayPlanStep } from "./actions/text";
+import { useActionState } from "./actions/useActionState";
+import { sharedAudioRef } from "./audio/sharedAudioRef";
+import { useAssistantTts } from "./audio/useAssistantTts";
+import { useMicCapture } from "./audio/useMicCapture";
+import AssistantSubtitle from "./chrome/AssistantSubtitle";
+import BottomBar from "./chrome/BottomBar";
+import CornerActions from "./chrome/CornerActions";
+import FloatingChatInput from "./chrome/FloatingChatInput";
+import SphereOverlay from "./chrome/SphereOverlay";
+import TitleBar from "./chrome/TitleBar";
+import type { ActionsConfig } from "./settings/actionsConfig";
+import { loadLocal, saveLocal } from "./settings/storage";
+import type { SettingsData } from "./settings/types";
+import { useJarvisSocket, type WsMessage } from "./ws/useJarvisSocket";
 
-const SAMPLE_RATE = 16000;
-const CHUNK_SIZE = 4096;
-const FFT_SIZE = 256;
-
-// Shared audio buffer — SandParticles reads this directly, no React re-renders
-export type AudioState = "idle" | "listening" | "speaking";
-export const sharedAudioRef = {
-    current: null as Uint8Array | null,
-    active: false,
-    state: "idle" as AudioState,
-    // speaking 애니메이션용: delta 도착 시 펄스
-    speakingPulse: 0,
-};
-
-function float32ToInt16Array(f32: Float32Array): number[] {
-    const out: number[] = new Array(f32.length);
-    for (let i = 0; i < f32.length; i++) {
-        const s = Math.max(-1, Math.min(1, f32[i]));
-        out[i] = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
-    }
-    return out;
-}
+export { sharedAudioRef } from "./audio/sharedAudioRef";
+export type { AudioState } from "./audio/sharedAudioRef";
 
 interface AppProps {
     token: string;
@@ -31,28 +28,45 @@ interface AppProps {
 }
 
 export default function App({ token, onLogout }: AppProps) {
-    const [micActive, setMicActive] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [userSubtitle, setUserSubtitle] = useState("");
     const [assistantSubtitle, setAssistantSubtitle] = useState("");
+    // step/thinking 등 "진행 중" 표시일 때 살짝 옅게 보여주기 위한 플래그
+    const [assistantSubtitleDim, setAssistantSubtitleDim] = useState(false);
     const [sttState, setSttState] = useState<string>("idle");
-    const [wsStatus, setWsStatus] = useState<
-        "connecting" | "connected" | "disconnected"
-    >("connecting");
     const [viewMode, setViewMode] = useState<ViewMode>("waveform");
     const [chatInput, setChatInput] = useState("");
     const [chatOpen, setChatOpen] = useState(false);
+    const [chatAnchor, setChatAnchor] = useState({ x: 0, y: 0 });
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [settingsData, setSettingsData] = useState<SettingsData>(loadLocal);
 
-    const userspaceWsRef = useRef<WebSocket | null>(null);
     const assistantDeltaBufferRef = useRef("");
     const chatInputRef = useRef<HTMLInputElement>(null);
-    const mediaStreamRef = useRef<MediaStream | null>(null);
-    const audioContextRef = useRef<AudioContext | null>(null);
-    const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-    const workletRef = useRef<AudioWorkletNode | null>(null);
-    const analyserRef = useRef<AnalyserNode | null>(null);
-    const analyserTimerRef = useRef<number>(0);
+    const autoMinimizeActionRef = useRef<string | null>(null);
+    const pointerRef = useRef({ x: 0, y: 0 });
+
+    // ── Actions config (settings 탭) ──
+    const [actionsConfig, setActionsConfig] = useState<ActionsConfig | null>(null);
+    const [actionsSaving, setActionsSaving] = useState(false);
+    const [actionsError, setActionsError] = useState<string | null>(null);
+
+    // ── Conversation processing flag — STOP 버튼 가시성 ──
+    // backend의 conversation.state(processing/speaking)에 동기화.
+    const [convBusy, setConvBusy] = useState(false);
+
+    // ── Action infra (forward-ref pattern: sendEvent ↔ useActionState 순환 끊기) ──
+    const sendEventRef = useRef<
+        ((type: string, payload: Record<string, unknown>) => void) | null
+    >(null);
+    const stableSendEvent = useCallback(
+        (type: string, payload: Record<string, unknown>) => {
+            sendEventRef.current?.(type, payload);
+        },
+        [],
+    );
+    const actionState = useActionState({ sendEvent: stableSendEvent });
+    const assistantTts = useAssistantTts(settingsData.tts);
 
     // ── TTS events ───────────────────────────────────────
     useEffect(() => {
@@ -88,308 +102,294 @@ export default function App({ token, onLogout }: AppProps) {
         };
     }, []);
 
-    // ── WebSocket connection (auto-reconnect) ─────────────
     useEffect(() => {
-        let destroyed = false;
-        let retryTimer: ReturnType<typeof setTimeout> | null = null;
-        let wsUrl = "";
+        pointerRef.current = {
+            x: Math.round(window.innerWidth / 2),
+            y: Math.round(window.innerHeight / 2),
+        };
+        setChatAnchor(pointerRef.current);
 
-        const connect = async () => {
-            if (destroyed) return;
-            setWsStatus("connecting");
-            try {
-                const bridge = (window as any).jarvisBridge;
-                const config = bridge?.getUserspaceConfig
-                    ? await bridge.getUserspaceConfig()
-                    : null;
-                if (typeof config?.wsUrl === "string" && config.wsUrl.trim()) {
-                    wsUrl = config.wsUrl.trim();
-                } else if (config?.host && config?.port) {
-                    wsUrl = `ws://${config.host}:${config.port}/ws`;
-                }
-            } catch (_) {}
-
-            if (!wsUrl) {
-                setWsStatus("disconnected");
-                if (!destroyed) {
-                    retryTimer = setTimeout(connect, 2000);
-                }
-                return;
-            }
-
-            // Append JWT token as query parameter
-            const sep = wsUrl.includes("?") ? "&" : "?";
-            const authUrl = `${wsUrl}${sep}token=${encodeURIComponent(token)}`;
-
-            const ws = new WebSocket(authUrl);
-            userspaceWsRef.current = ws;
-
-            ws.onopen = () => {
-                console.log("[WS] connected");
-                setWsStatus("connected");
-            };
-
-            ws.onclose = () => {
-                setWsStatus("disconnected");
-                userspaceWsRef.current = null;
-                // Auto-reconnect after 2s if not intentionally destroyed
-                if (!destroyed) {
-                    console.log("[WS] disconnected, retrying in 2s...");
-                    retryTimer = setTimeout(connect, 2000);
-                }
-            };
-
-            ws.onerror = () => {
-                // onclose will fire after this, triggering reconnect
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const { type, payload = {} } = JSON.parse(event.data);
-                    // console.log("[WS] " + type + " " + JSON.stringify(payload));
-                    if (type === "stt.partial") {
-                        const text = String(payload.text || "");
-                        if (text) setUserSubtitle(text);
-                    } else if (type === "stt.final") {
-                        const text = String(payload.text || "");
-                        if (text) setUserSubtitle(text);
-                        // User turn done → clear for assistant response
-                        setIsSpeaking(true);
-                        assistantDeltaBufferRef.current = "";
-                        setAssistantSubtitle("");
-                    } else if (type === "stt.state") {
-                        setSttState(
-                            String(payload.status || payload.state || "idle"),
-                        );
-                    } else if (
-                        type === "chat.delta" ||
-                        type === "conversation.delta"
-                    ) {
-                        assistantDeltaBufferRef.current += String(
-                            payload.text || "",
-                        );
-                        setAssistantSubtitle(assistantDeltaBufferRef.current);
-                        sharedAudioRef.speakingPulse = 1;
-                    } else if (
-                        type === "chat.done" ||
-                        type === "conversation.done"
-                    ) {
-                        const t = String(payload.text || "").trim();
-                        if (t) setAssistantSubtitle(t);
-                        assistantDeltaBufferRef.current = "";
-                    } else if (type === "conversation.thinking") {
-                        setAssistantSubtitle(
-                            String(payload.text || "DeepThinking..."),
-                        );
-                    } else if (type === "conversation.plan_step") {
-                        const title = String(payload.title || "").trim();
-                        if (title) setAssistantSubtitle(title);
-                    } else if (type === "conversation.state") {
-                        const state = String(payload.state || "idle");
-                        if (state === "speaking") {
-                            setIsSpeaking(true);
-                            sharedAudioRef.state = "speaking";
-                        } else if (state === "idle") {
-                            setIsSpeaking(false);
-                            sharedAudioRef.state = "idle";
-                        } else if (state === "listening") {
-                            setIsSpeaking(false);
-                            sharedAudioRef.state = "listening";
-                        }
-                    }
-                } catch (_) {}
+        const onPointerMove = (event: PointerEvent) => {
+            pointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
             };
         };
-
-        connect();
-        return () => {
-            destroyed = true;
-            if (retryTimer) clearTimeout(retryTimer);
-            userspaceWsRef.current?.close();
-            userspaceWsRef.current = null;
-        };
-    }, [token]);
-
-    const sendEvent = (type: string, payload: Record<string, unknown>) => {
-        const ws = userspaceWsRef.current;
-        if (ws?.readyState === WebSocket.OPEN)
-            ws.send(JSON.stringify({ type, payload }));
-    };
-
-    // ── Audio control ────────────────────────────────────
-    const stopAudio = useCallback(() => {
-        cancelAnimationFrame(analyserTimerRef.current);
-        try {
-            workletRef.current?.disconnect();
-            sourceRef.current?.disconnect();
-            analyserRef.current?.disconnect();
-            audioContextRef.current?.close();
-            mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-        } catch (_) {}
-        workletRef.current = null;
-        sourceRef.current = null;
-        analyserRef.current = null;
-        audioContextRef.current = null;
-        mediaStreamRef.current = null;
-        sharedAudioRef.current = null;
-        sharedAudioRef.active = false;
-        sharedAudioRef.state = "idle";
+        window.addEventListener("pointermove", onPointerMove);
+        return () => window.removeEventListener("pointermove", onPointerMove);
     }, []);
 
-    const stopMic = useCallback(() => {
-        sendEvent("stt.stop", {});
-        stopAudio();
-        setMicActive(false);
-        setSttState("idle");
-        sharedAudioRef.state = "idle";
-    }, [stopAudio]);
+    const minimizeForExternalAction = useCallback(async (actionId: string) => {
+        if (!actionId || autoMinimizeActionRef.current === actionId) return;
+        autoMinimizeActionRef.current = actionId;
+        const bridge = (window as any).jarvisBridge;
+        if (viewMode !== "waveform" && viewMode !== "restoring") return;
+        if (bridge?.minimizeNow) {
+            await bridge.minimizeNow();
+            setViewMode("sphere");
+            return;
+        }
+        bridge?.minimizeWindow?.();
+    }, [viewMode]);
 
-    const startMic = useCallback(async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    sampleRate: SAMPLE_RATE,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                },
-            });
-            mediaStreamRef.current = stream;
+    const restoreAfterExternalActionFailure = useCallback(async () => {
+        const bridge = (window as any).jarvisBridge;
+        if (viewMode === "sphere" || viewMode === "minimizing") {
+            bridge?.restoreWindow?.();
+            setViewMode("restoring");
+        }
+    }, [viewMode]);
 
-            const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-            audioContextRef.current = ctx;
-            const source = ctx.createMediaStreamSource(stream);
-            sourceRef.current = source;
+    const handleExternalActionFailure = useCallback((payload: Record<string, any>) => {
+        const action = payload.action || {};
+        const actionType = String(payload.type || action.type || "");
+        if (!isExternalActionType(actionType)) return;
 
-            // AnalyserNode for frequency data (visualization)
-            const analyser = ctx.createAnalyser();
-            analyser.fftSize = FFT_SIZE;
-            analyser.smoothingTimeConstant = 0.75;
-            analyserRef.current = analyser;
-            source.connect(analyser);
+        void restoreAfterExternalActionFailure();
+        autoMinimizeActionRef.current = null;
+        const error = String(payload.error || "Action failed");
+        const command = String(action.command || payload.command || action.target || actionType);
+        setIsSpeaking(true);
+        setAssistantSubtitle(nextActionText(actionType, command, error));
+    }, [restoreAfterExternalActionFailure]);
 
-            // AudioWorkletNode for PCM capture (replaces deprecated ScriptProcessorNode)
-            const workletCode = `
-        class PCMCapture extends AudioWorkletProcessor {
-          constructor() {
-            super();
-            this._buf = [];
-            this._count = 0;
-          }
-          process(inputs) {
-            const ch = inputs[0]?.[0];
-            if (!ch) return true;
-            // Accumulate 128-sample frames into ~4096-sample chunks
-            for (let i = 0; i < ch.length; i++) this._buf.push(ch[i]);
-            this._count += ch.length;
-            if (this._count >= 4096) {
-              this.port.postMessage(new Float32Array(this._buf));
-              this._buf = [];
-              this._count = 0;
+    const applyActionUiSideEffects = useCallback((msg: WsMessage) => {
+        const { type, payload } = msg;
+
+        if (type === "conversation.plan_step") {
+            const status = String(payload.status || "");
+            if (status === "completed") {
+                setAssistantSubtitle("");
+                setAssistantSubtitleDim(false);
+                return;
             }
-            return true;
-          }
+            const description = displayPlanStep(payload);
+            if (description) {
+                setIsSpeaking(true);
+                setAssistantSubtitle(description);
+                setAssistantSubtitleDim(true);
+            }
+            return;
         }
-        registerProcessor('pcm-capture', PCMCapture);
-      `;
-            const blob = new Blob([workletCode], {
-                type: "application/javascript",
-            });
-            const workletUrl = URL.createObjectURL(blob);
-            await ctx.audioWorklet.addModule(workletUrl);
-            URL.revokeObjectURL(workletUrl);
 
-            const worklet = new AudioWorkletNode(ctx, "pcm-capture");
-            workletRef.current = worklet;
-
-            const sampleRate = ctx.sampleRate;
-            worklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
-                const f32 = e.data;
-                const ws = userspaceWsRef.current;
-                if (ws?.readyState === WebSocket.OPEN) {
-                    ws.send(
-                        JSON.stringify({
-                            type: "stt.audio.chunk",
-                            payload: {
-                                samples: float32ToInt16Array(f32),
-                                sample_rate: sampleRate,
-                            },
-                        }),
-                    );
-                }
-            };
-
-            source.connect(worklet);
-
-            sendEvent("stt.start", { sample_rate: sampleRate });
-            setMicActive(true);
-            sharedAudioRef.active = true;
-            sharedAudioRef.state = "listening";
-            setSttState("listening");
-
-            // Poll analyser → write to shared ref (NO setState, NO re-render)
-            const freqBuf = new Uint8Array(analyser.frequencyBinCount);
-            const poll = () => {
-                analyser.getByteFrequencyData(freqBuf);
-                sharedAudioRef.current = freqBuf;
-                analyserTimerRef.current = requestAnimationFrame(poll);
-            };
-            poll();
-        } catch (err) {
-            console.error("[STT] startMic failed:", err);
-            stopAudio();
-            setMicActive(false);
+        if (type === "conversation.action_dispatch") {
+            const action = payload.action || {};
+            const actionId = String(payload.action_id || "");
+            const actionType = String(action.type || "");
+            const description = String(action.description || actionType || "").trim();
+            if (description && !action.requires_confirm) {
+                setIsSpeaking(true);
+                setAssistantSubtitle(formatProgressText(description));
+            }
+            return;
         }
-    }, [stopAudio]);
 
-    const toggleMic = useCallback(async () => {
-        micActive ? stopMic() : await startMic();
-    }, [micActive, stopMic, startMic]);
+        if (type === "client_action.started") {
+            const actionId = String(payload.action_id || "");
+            const actionType = String(payload.type || "");
+            const description = String(payload.description || actionType || "").trim();
+            if (description && payload.requires_confirm !== true) {
+                setIsSpeaking(true);
+                setAssistantSubtitle(formatProgressText(description));
+            }
+            if (
+                actionId
+                && isExternalActionType(actionType)
+                && payload.requires_confirm !== true
+            ) {
+                void minimizeForExternalAction(actionId);
+            }
+            return;
+        }
+
+        if (
+            type === "client_action.failed"
+            || type === "client_action.timeout"
+            || type === "conversation.action_result"
+        ) {
+            const status = String(payload.status || (type.endsWith("failed") ? "failed" : ""));
+            if (
+                type === "client_action.failed"
+                || type === "client_action.timeout"
+                || status === "failed"
+                || status === "timeout"
+            ) {
+                handleExternalActionFailure(payload);
+            }
+        }
+    }, [handleExternalActionFailure, minimizeForExternalAction]);
+
+    // ── WebSocket message routing ────────────────────────
+    const handleMessage = useCallback((msg: WsMessage) => {
+        applyActionUiSideEffects(msg);
+
+        // 설정 응답
+        if (msg.type === "config.actions.value") {
+            setActionsConfig(msg.payload as ActionsConfig);
+            setActionsSaving(false);
+            setActionsError(null);
+            return;
+        }
+        if (msg.type === "config.actions.error") {
+            setActionsSaving(false);
+            setActionsError(String(msg.payload?.message || "save failed"));
+            return;
+        }
+
+        // 액션 라이프사이클 메시지(client_action.*)는 actionState가 흡수
+        if (actionState.onWsMessage(msg)) return;
+
+        const { type, payload } = msg;
+        if (type === "stt.partial") {
+            const text = String(payload.text || "");
+            if (text) setUserSubtitle(text);
+        } else if (type === "stt.final") {
+            const text = String(payload.text || "");
+            if (text) setUserSubtitle(text);
+            setIsSpeaking(true);
+            setConvBusy(true);
+            assistantDeltaBufferRef.current = "";
+            setAssistantSubtitle("");
+            setAssistantSubtitleDim(false);
+        } else if (type === "stt.state") {
+            setSttState(String(payload.status || payload.state || "idle"));
+        } else if (type === "chat.delta" || type === "conversation.delta") {
+            assistantDeltaBufferRef.current += String(payload.text || "");
+            setAssistantSubtitle(cleanAssistantText(assistantDeltaBufferRef.current));
+            setAssistantSubtitleDim(false);
+            sharedAudioRef.speakingPulse = 1;
+        } else if (type === "chat.done" || type === "conversation.done") {
+            const doneText = displayDoneText(payload);
+            const spokenText =
+                cleanAssistantText(String(payload.text || "")) ||
+                cleanAssistantText(assistantDeltaBufferRef.current) ||
+                doneText;
+            setAssistantSubtitle(doneText);
+            setAssistantSubtitleDim(false);
+            assistantDeltaBufferRef.current = "";
+            assistantTts.speak(spokenText);
+        } else if (type === "conversation.thinking") {
+            setAssistantSubtitle(
+                `${String(payload.text || "DeepThinking")} 진행중...`,
+            );
+            setAssistantSubtitleDim(true);
+        } else if (type === "conversation.plan_step") {
+            const status = String(payload.status || "");
+            if (status === "completed") {
+                setAssistantSubtitle("");
+                setAssistantSubtitleDim(false);
+                return;
+            }
+            const description = displayPlanStep(payload);
+            if (description) {
+                const stillRunning = !status || status === "in_progress";
+                setIsSpeaking(true);
+                setAssistantSubtitle(description);
+                setAssistantSubtitleDim(stillRunning);
+            }
+        } else if (type === "conversation.state") {
+            const state = String(payload.state || "idle");
+            if (state === "speaking") {
+                setIsSpeaking(true);
+                setConvBusy(true);
+                sharedAudioRef.state = "speaking";
+            } else if (state === "processing") {
+                setConvBusy(true);
+            } else if (state === "idle") {
+                setIsSpeaking(false);
+                setConvBusy(false);
+                sharedAudioRef.state = "idle";
+            } else if (state === "listening") {
+                setIsSpeaking(false);
+                setConvBusy(false);
+                sharedAudioRef.state = "listening";
+            }
+        } else if (type === "conversation.cancelled") {
+            setIsSpeaking(false);
+            setConvBusy(false);
+            setAssistantSubtitleDim(false);
+            assistantDeltaBufferRef.current = "";
+            sharedAudioRef.state = "idle";
+            assistantTts.cancel();
+        }
+    }, [actionState, applyActionUiSideEffects, assistantTts]);
+
+    const { sendEvent, wsRef } = useJarvisSocket({
+        token,
+        onMessage: handleMessage,
+    });
+
+    // sendEvent를 ref로 노출 — useActionState/respondConfirm이 이를 통해 송신
+    useEffect(() => {
+        sendEventRef.current = sendEvent;
+    }, [sendEvent]);
+
+    const mic = useMicCapture({ sendEvent, wsRef });
+
+    // Mic state side-effect: stt state
+    useEffect(() => {
+        if (mic.active) setSttState("listening");
+        else setSttState("idle");
+    }, [mic.active]);
 
     const handleChatSubmit = useCallback(() => {
         const text = chatInput.trim();
         if (!text) return;
         setUserSubtitle(text);
         setIsSpeaking(true);
+        setConvBusy(true);
         assistantDeltaBufferRef.current = "";
         setAssistantSubtitle("");
+        setAssistantSubtitleDim(false);
         sendEvent("chat.request", { text });
         setChatInput("");
-    }, [chatInput]);
+    }, [chatInput, sendEvent]);
+
+    const handleStop = useCallback(() => {
+        if (!convBusy) return;
+        sendEvent("conversation.cancel", {});
+        // 서버 응답 도착 전 즉시 UI 반응
+        setConvBusy(false);
+        setIsSpeaking(false);
+        setAssistantSubtitleDim(false);
+        assistantTts.cancel();
+    }, [assistantTts, convBusy, sendEvent]);
 
     // ── Keyboard shortcuts ──────────────────────────────
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.key === "p" && e.ctrlKey) {
                 e.preventDefault();
-                toggleMic();
+                mic.toggle();
             }
-            // Enter to open chat, Escape to close
             if (e.key === "Enter" && !chatOpen && !e.ctrlKey && !e.metaKey) {
                 const tag = (e.target as HTMLElement)?.tagName;
                 if (tag === "INPUT" || tag === "TEXTAREA") return;
                 e.preventDefault();
+                if (viewMode === "sphere" || viewMode === "minimizing") {
+                    setChatAnchor(pointerRef.current);
+                }
                 setChatOpen(true);
                 setTimeout(() => chatInputRef.current?.focus(), 50);
             }
-            if (e.key === "Escape" && chatOpen) {
-                setChatOpen(false);
-                setChatInput("");
+            if (e.key === "Escape") {
+                // 응답/추론 중엔 STOP 우선
+                if (convBusy) {
+                    e.preventDefault();
+                    handleStop();
+                    return;
+                }
+                if (chatOpen) {
+                    setChatOpen(false);
+                    setChatInput("");
+                }
             }
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [toggleMic, chatOpen]);
-
-    useEffect(() => {
-        return () => {
-            stopAudio();
-            userspaceWsRef.current?.close();
-        };
-    }, [stopAudio]);
+    }, [mic, chatOpen, convBusy, handleStop, viewMode]);
 
     // ── Window controls ──────────────────────────────────
-    // Fade out done → tell main to resize (don't change viewMode yet)
     const handleMinimizeDone = useCallback(() => {
         (window as any).jarvisBridge?.minimizeAnimationDone?.();
     }, []);
@@ -424,325 +424,159 @@ export default function App({ token, onLogout }: AppProps) {
             />
 
             {isNormal && (
-                <div
-                    style={
-                        {
-                            position: "absolute",
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            height: 40,
-                            zIndex: 50,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "flex-end",
-                            WebkitAppRegion: "drag",
-                        } as React.CSSProperties
-                    }
-                >
-                    <div
-                        style={
-                            {
-                                display: "flex",
-                                gap: 4,
-                                marginRight: 12,
-                                WebkitAppRegion: "no-drag",
-                            } as React.CSSProperties
-                        }
-                    >
-                        <button
-                            onClick={handleMinimize}
-                            style={{
-                                width: 28,
-                                height: 28,
-                                background: "none",
-                                border: "none",
-                                color: "#888",
-                                cursor: "pointer",
-                                fontSize: 14,
-                            }}
-                            title="Minimize"
-                        >
-                            &#9679;
-                        </button>
-                        <button
-                            onClick={handleClose}
-                            style={{
-                                width: 28,
-                                height: 28,
-                                background: "none",
-                                border: "none",
-                                color: "#888",
-                                cursor: "pointer",
-                                fontSize: 14,
-                            }}
-                            title="Close"
-                        >
-                            &#10005;
-                        </button>
-                    </div>
-                </div>
+                <TitleBar onMinimize={handleMinimize} onClose={handleClose} />
             )}
 
             {isSphere && (
-                <div
-                    style={{
-                        position: "absolute",
-                        inset: 0,
-                        zIndex: 50,
-                        display: "flex",
-                        alignItems: "center",
-                        pointerEvents: "none",
-                    }}
-                >
-                    {/* Speech bubble — left side */}
-                    {activeSubtitle ? (
-                        <div
-                            style={{
-                                flex: 1,
-                                padding: "8px 12px",
-                                marginLeft: 12,
-                                marginRight: 20,
-                                background: "rgba(30,30,30,0.85)",
-                                border: "1px solid rgba(120,80,30,0.4)",
-                                borderRadius: 10,
-                                color: "rgba(210,180,140,0.9)",
-                                fontSize: 12,
-                                lineHeight: 1.4,
-                                maxHeight: "100%",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                pointerEvents: "auto",
-                                backdropFilter: "blur(6px)",
-                            }}
-                        >
-                            {activeSubtitle}
-                        </div>
-                    ) : micActive ? (
-                        <div
-                            style={{
-                                flex: 1,
-                                padding: "8px 12px",
-                                marginLeft: 12,
-                                marginRight: 20,
-                                color: "rgba(120,80,40,0.6)",
-                                fontSize: 11,
-                                fontFamily: "monospace",
-                                letterSpacing: "0.15em",
-                                pointerEvents: "none",
-                            }}
-                        >
-                            LISTENING...
-                        </div>
-                    ) : null}
-                    {/* Sphere click area */}
-                    <div
-                        onClick={handleSphereClick}
-                        style={{
-                            width: 120,
-                            minWidth: 120,
-                            height: "100%",
-                            cursor: "pointer",
-                            pointerEvents: "auto",
-                        }}
-                    />
-                </div>
-            )}
-
-            {/* ── Assistant response (top) ── */}
-            {isNormal && assistantSubtitle && (
-                <div
-                    style={{
-                        position: "absolute",
-                        top: "5em",
-                        left: 0,
-                        right: 0,
-                        zIndex: 50,
-                        display: "flex",
-                        justifyContent: "center",
-                        padding: "0 48px",
-                    }}
-                >
-                    <p
-                        style={{
-                            textAlign: "center",
-                            fontSize: 20,
-                            color: "rgba(210,180,140,0.9)",
-                            textShadow: "0 0 20px rgba(194,149,107,0.4)",
-                            maxWidth: 900,
-                            margin: 0,
-                            lineHeight: 1.6,
-                        }}
-                    >
-                        {assistantSubtitle}
-                    </p>
-                </div>
-            )}
-
-            {/* ── User subtitle + chat input (bottom) ── */}
-            {isNormal && (
-                <div
-                    style={{
-                        position: "absolute",
-                        bottom: 32,
-                        left: 0,
-                        right: 0,
-                        zIndex: 50,
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        padding: "0 32px",
-                        gap: 16,
-                    }}
-                >
-                    {userSubtitle && (micActive || sttState === "listening") ? (
-                        <p
-                            style={{
-                                textAlign: "center",
-                                fontSize: 18,
-                                color: "rgba(150,200,230,0.85)",
-                                textShadow: "0 0 16px rgba(100,180,220,0.4)",
-                                maxWidth: 1100,
-                                margin: 0,
-                            }}
-                        >
-                            {userSubtitle}
-                        </p>
-                    ) : (
-                        <p
-                            style={{
-                                textAlign: "center",
-                                fontSize: 13,
-                                color: "rgba(120,80,40,0.5)",
-                                letterSpacing: "0.2em",
-                                fontFamily: "monospace",
-                                margin: 0,
-                            }}
-                        >
-                            {micActive
-                                ? "LISTENING..."
-                                : "PRESS ENTER TO CHAT · CTRL+P TO SPEAK"}
-                        </p>
-                    )}
-
-                    {chatOpen && (
-                        <div
-                            style={{
-                                width: "100%",
-                                maxWidth: 600,
-                                display: "flex",
-                                gap: 8,
-                            }}
-                        >
-                            <input
-                                ref={chatInputRef}
-                                type="text"
-                                value={chatInput}
-                                onChange={(e) => setChatInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey) {
-                                        e.preventDefault();
-                                        handleChatSubmit();
-                                    }
-                                }}
-                                placeholder="메시지를 입력하세요..."
-                                style={{
-                                    flex: 1,
-                                    padding: "10px 16px",
-                                    background: "rgba(30,30,30,0.8)",
-                                    border: "1px solid rgba(120,80,30,0.3)",
-                                    borderRadius: 8,
-                                    color: "rgba(210,180,140,0.9)",
-                                    fontSize: 14,
-                                    outline: "none",
-                                    backdropFilter: "blur(8px)",
-                                }}
-                            />
-                            <button
-                                onClick={handleChatSubmit}
-                                style={{
-                                    padding: "10px 20px",
-                                    background: "rgba(120,80,30,0.4)",
-                                    border: "1px solid rgba(120,80,30,0.3)",
-                                    borderRadius: 8,
-                                    color: "rgba(210,180,140,0.9)",
-                                    fontSize: 14,
-                                    cursor: "pointer",
-                                }}
-                            >
-                                ↵
-                            </button>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* ── Logout button (bottom-left, normal mode only) ── */}
-            {isNormal && (
-                <button
-                    onClick={onLogout}
-                    style={{
-                        position: "absolute",
-                        bottom: 14,
-                        left: 18,
-                        zIndex: 50,
-                        background: "none",
-                        border: "none",
-                        color: "rgba(120,80,40,0.35)",
-                        fontSize: 11,
-                        fontFamily: "monospace",
-                        letterSpacing: "0.1em",
-                        cursor: "pointer",
-                        padding: "4px 8px",
-                        transition: "color 0.2s ease",
-                    }}
-                    onMouseEnter={(e) =>
-                        (e.currentTarget.style.color = "rgba(220,80,60,0.7)")
-                    }
-                    onMouseLeave={(e) =>
-                        (e.currentTarget.style.color = "rgba(120,80,40,0.35)")
-                    }
-                    title="Logout"
-                >
-                    LOGOUT
-                </button>
+                <SphereOverlay
+                    subtitle={activeSubtitle}
+                    micActive={mic.active}
+                    onSphereClick={handleSphereClick}
+                />
             )}
 
             {isNormal && (
-                <button
-                    onClick={() => setSettingsOpen(true)}
-                    style={{
-                        position: "absolute",
-                        bottom: 14,
-                        left: 90,
-                        zIndex: 50,
-                        background: "none",
-                        border: "none",
-                        color: "rgba(120,80,40,0.35)",
-                        fontSize: 11,
-                        fontFamily: "monospace",
-                        letterSpacing: "0.1em",
-                        cursor: "pointer",
-                        padding: "4px 8px",
-                        transition: "color 0.2s ease",
-                    }}
-                    onMouseEnter={(e) =>
-                        (e.currentTarget.style.color = "rgba(194,149,107,0.7)")
-                    }
-                    onMouseLeave={(e) =>
-                        (e.currentTarget.style.color = "rgba(120,80,40,0.35)")
-                    }
-                    title="Settings"
-                >
-                    SETTINGS
-                </button>
+                <AssistantSubtitle
+                    text={assistantSubtitle}
+                    dim={assistantSubtitleDim}
+                />
+            )}
+
+            {isNormal && (
+                <BottomBar
+                    ref={chatInputRef}
+                    userSubtitle={userSubtitle}
+                    sttListening={sttState === "listening"}
+                    micActive={mic.active}
+                    chatOpen={chatOpen}
+                    chatInput={chatInput}
+                    stopVisible={convBusy}
+                    onChatInputChange={setChatInput}
+                    onChatSubmit={handleChatSubmit}
+                    onStop={handleStop}
+                />
+            )}
+
+            {isSphere && chatOpen && (
+                <FloatingChatInput
+                    ref={chatInputRef}
+                    x={chatAnchor.x}
+                    y={chatAnchor.y}
+                    value={chatInput}
+                    stopVisible={convBusy}
+                    onChange={setChatInput}
+                    onSubmit={handleChatSubmit}
+                    onStop={handleStop}
+                />
+            )}
+
+            {isNormal && (
+                <CornerActions
+                    onLogout={onLogout}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                />
             )}
 
             <SettingsModal
                 open={settingsOpen}
                 token={token}
                 onClose={() => setSettingsOpen(false)}
+                actionsConfig={actionsConfig}
+                actionsSaving={actionsSaving}
+                actionsError={actionsError}
+                onRequestActionsConfig={() => {
+                    setActionsError(null);
+                    sendEvent("config.actions.get", {});
+                }}
+                onSaveActionsConfig={(patch) => {
+                    setActionsSaving(true);
+                    setActionsError(null);
+                    sendEvent("config.actions.set", patch as Record<string, unknown>);
+                }}
+                onSettingsChange={(next) => {
+                    setSettingsData(next);
+                    saveLocal(next);
+                }}
+            />
+
+            {/* ── Action UI: 토스트 피드 + 컨펌 모달 ── */}
+            {isNormal && (
+                <ActionFeed
+                    feed={actionState.state.feed}
+                    onDismiss={actionState.dismissFeedEntry}
+                />
+            )}
+            <ActionConfirmModal
+                pending={actionState.state.pendingConfirms[0] ?? null}
+                onRespond={async (actionId, accepted, reason) => {
+                    const pending = actionState.state.pendingConfirms.find(
+                        (p) => p.action_id === actionId,
+                    );
+                    if (
+                        accepted
+                        && pending
+                        && isExternalActionType(pending.action.type)
+                    ) {
+                        setIsSpeaking(true);
+                        setAssistantSubtitle(
+                            formatProgressText(
+                                pending.action.description || pending.action.type,
+                            ),
+                        );
+                        await minimizeForExternalAction(actionId);
+                    }
+                    actionState.respondConfirm(actionId, accepted, reason);
+                }}
             />
         </div>
     );
+}
+
+const EXTERNAL_ACTION_TYPES = new Set([
+    "terminal",
+    "app_control",
+    "file_write",
+    "file_read",
+    "open_url",
+    "browser_control",
+    "web_search",
+    "mouse_click",
+    "mouse_drag",
+    "keyboard_type",
+    "hotkey",
+    "screenshot",
+]);
+
+function isExternalActionType(type: string): boolean {
+    return EXTERNAL_ACTION_TYPES.has(type);
+}
+
+function formatProgressText(value: string): string {
+    const text = value
+        .replace(/\s*하는중\.{0,3}\s*$/u, "")
+        .replace(/\s*진행중\.{0,3}\s*$/u, "")
+        .trim();
+    return text ? `${text} 하는중...` : "";
+}
+
+function nextActionText(type: string, command: string, error: string): string {
+    if (/client action result timed out|result timed out|timed out/i.test(error)) {
+        if (type === "app_control") {
+            return `${command} 실행 결과가 제시간에 확인되지 않았습니다. 앱이 설치되어 있지 않다면 Chrome 또는 Safari로 다시 시도하세요.`;
+        }
+        return `외부 작업 결과가 제시간에 확인되지 않았습니다. 같은 작업을 다시 시도하거나 다른 방법을 선택하세요.`;
+    }
+    if (type === "app_control" && /not found|찾을 수|없/i.test(error)) {
+        return `${command} 실행에 실패했습니다. 설치되어 있지 않은 앱이면 Chrome 또는 Safari로 다시 시도하세요.`;
+    }
+    if (type === "browser_control" || type === "open_url" || type === "web_search") {
+        if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
+            return "Chrome 설정에서 View > Developer > Allow JavaScript from Apple Events를 켠 뒤 다시 시도하세요.";
+        }
+        if (/no active browser tab/i.test(error)) {
+            return "활성 브라우저 탭을 찾지 못했습니다. 검색 결과 탭을 앞으로 가져온 뒤 다시 시도하세요.";
+        }
+        return `브라우저 작업에 실패했습니다. 기본 브라우저 또는 다른 브라우저로 다시 시도하세요.`;
+    }
+    return `외부 작업에 실패했습니다. ${error}`;
 }
