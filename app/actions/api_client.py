@@ -39,11 +39,13 @@ class ClientActionAPIClient:
         auth_token: str,
         timeout: float = 30.0,
         client_id: str = "",
+        runtime_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
         self.timeout = timeout
         self.client_id = client_id
+        self.runtime_headers = runtime_headers or {}
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -61,6 +63,7 @@ class ClientActionAPIClient:
         }
         if self.client_id:
             h["x-client-id"] = self.client_id
+        h.update(self.runtime_headers)
         return h
 
     # ── Polling ────────────────────────────────────────

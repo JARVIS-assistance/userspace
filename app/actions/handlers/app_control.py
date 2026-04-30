@@ -20,7 +20,9 @@ APP_ALIASES = {
     "firefox": "Firefox",
     "mozilla firefox": "Firefox",
     "safari": "Safari",
-    "browser": "Google Chrome",
+    "sublime-text": "Sublime Text",
+    "sublime text": "Sublime Text",
+    "sublime": "Sublime Text",
 }
 
 
@@ -28,15 +30,11 @@ def make_app_control(enabled: bool):
     async def app_control(action: ClientAction) -> dict[str, Any]:
         if not enabled:
             raise HandlerError("app_control disabled by policy")
-        raw_command = (action.command or "open").strip()
-        command = raw_command.lower()
-        app_name = (action.target or action.payload or "").strip()
-        if not app_name and command not in {"open", "activate", "quit", "close"}:
-            app_name = raw_command
-            command = "open"
+        command, app_name = _normalize_command_and_app(action)
+        if command not in {"open", "activate", "quit", "close"}:
+            raise HandlerError(f"unsupported app_control command: {command!r}")
         if not app_name:
             raise HandlerError("missing target app")
-        app_name = APP_ALIASES.get(app_name.lower(), app_name)
 
         if sys.platform != "darwin":
             raise HandlerError(f"app_control not supported on {sys.platform}")
@@ -53,9 +51,6 @@ def make_app_control(enabled: bool):
         escaped = _escape_applescript(app_name)
         if command in {"quit", "close"}:
             script = f'tell application "{escaped}" to quit'
-        else:
-            raise HandlerError(f"unsupported app_control command: {command!r}")
-
         proc = await asyncio.create_subprocess_exec(
             "osascript",
             "-e",
@@ -71,6 +66,12 @@ def make_app_control(enabled: bool):
         return {"app": app_name, "command": command}
 
     return app_control
+
+
+def _normalize_command_and_app(action: ClientAction) -> tuple[str, str]:
+    command = (action.command or "open").strip().lower()
+    app_name = (action.target or action.payload or "").strip()
+    return command, APP_ALIASES.get(app_name.lower(), app_name) if app_name else ""
 
 
 async def _application_exists(app_name: str) -> bool:
@@ -108,3 +109,20 @@ async def _open_application(app_name: str) -> None:
         raise HandlerError(
             f"application launch failed: {app_name}: {err.decode(errors='replace')[:300]}"
         )
+    await _activate_application(app_name)
+
+
+async def _activate_application(app_name: str) -> None:
+    escaped = _escape_applescript(app_name)
+    proc = await asyncio.create_subprocess_exec(
+        "osascript",
+        "-e",
+        f'tell application "{escaped}" to activate',
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
