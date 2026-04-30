@@ -4,6 +4,31 @@
     "port": 8765,
     "env": "dev"
   },
+  "actions": {
+    "enabled_types": ["notify", "clipboard", "open_url"],
+    "file_write": {
+      "allowed_paths": []
+    },
+    "terminal": {
+      "enabled": false,
+      "allowed_commands": []
+    },
+    "app_control": {
+      "enabled": false
+    },
+    "browser_control": {
+      "enabled": false
+    },
+    "web_search": {
+      "enabled": false
+    },
+    "screenshot": {
+      "enabled": false
+    },
+    "physical_input": {
+      "enabled": false
+    }
+  },
   "stt": {
     "model_name": "small",
     "device": "cpu",

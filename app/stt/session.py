@@ -11,11 +11,14 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from app.models.messages import EventEnvelope
-from app.stt.engine import LocalWhisperEngine, RealTimePartialSTT, STTEngineUnavailableError
+from app.stt.engine import STTEngineUnavailableError
+from app.stt.realtime import RealTimePartialSTT
+from app.stt.whisper_engine import LocalWhisperEngine
 
 
 SILENCE_THRESHOLD_RMS = 0.01
 SILENCE_DURATION_MS = 1500
+MIN_FINALIZE_SILENCE_MS = 450
 
 
 @dataclass
@@ -83,8 +86,10 @@ class STTSession:
         self._realtime: RealTimePartialSTT | _CompatRealtime | None = None
         
         self._last_speech_time: float = 0.0
+        self._speech_start_time: float = 0.0
         self._has_speech: bool = False
         self._last_partial_text: str = ""
+        self._active_profile: Any | None = None
 
     async def handle_start(self, payload: dict[str, Any]) -> list[EventEnvelope]:
         requested_profile = str(payload.get("profile", self.default_profile))
@@ -101,6 +106,7 @@ class STTSession:
 
         self.client_sample_rate = int(payload.get("sample_rate", self.default_sample_rate))
         active_profile = self.profiles.get(requested_profile)
+        self._active_profile = active_profile
 
         try:
             await asyncio.to_thread(self.engine.ensure_loaded_sync)
@@ -114,6 +120,7 @@ class STTSession:
 
         self.active = True
         self._last_speech_time = time.time()
+        self._speech_start_time = 0.0
         self._has_speech = False
         self._last_partial_text = ""
         return [
@@ -144,6 +151,8 @@ class STTSession:
         now = time.time()
         
         if rms > SILENCE_THRESHOLD_RMS:
+            if not self._has_speech:
+                self._speech_start_time = now
             self._last_speech_time = now
             self._has_speech = True
 
@@ -154,14 +163,17 @@ class STTSession:
         result = await asyncio.to_thread(self._realtime.add_audio_chunk, chunk)
         events: list[EventEnvelope] = []
         
+        text_changed = bool(result.text) and result.text != self._last_partial_text
         if result.text:
             self._last_partial_text = result.text
 
         silence_ms = (now - self._last_speech_time) * 1000
+        speech_ms = (self._last_speech_time - self._speech_start_time) * 1000
+        endpoint_silence_ms = self._endpoint_silence_ms()
         should_finalize = (
             self._has_speech 
-            and self._last_partial_text 
-            and silence_ms >= self.silence_duration_ms
+            and speech_ms >= self._minimum_speech_ms()
+            and silence_ms >= endpoint_silence_ms
         )
         
         if should_finalize:
@@ -179,6 +191,7 @@ class STTSession:
                 )
             self._realtime.reset()
             self._has_speech = False
+            self._speech_start_time = 0.0
             self._last_partial_text = ""
         elif result.is_final:
             if result.text:
@@ -192,7 +205,7 @@ class STTSession:
                         },
                     )
                 )
-        else:
+        elif text_changed:
             events.append(
                 EventEnvelope(
                     type="stt.partial",
@@ -298,3 +311,16 @@ class STTSession:
         up = target_rate // factor
         down = source_rate // factor
         return np.asarray(resample_poly(audio, up, down), dtype=np.float32)
+
+    def _endpoint_silence_ms(self) -> int:
+        profile = self._active_profile
+        if profile is None:
+            return self.silence_duration_ms
+        profile_silence_ms = int(getattr(profile, "min_end_ms", self.silence_duration_ms)) + 350
+        return max(MIN_FINALIZE_SILENCE_MS, min(self.silence_duration_ms, profile_silence_ms))
+
+    def _minimum_speech_ms(self) -> int:
+        profile = self._active_profile
+        if profile is None:
+            return 80
+        return max(40, int(getattr(profile, "min_start_ms", 80)))

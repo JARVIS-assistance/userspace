@@ -3,73 +3,29 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import aiohttp
 
 from app.models.messages import EventEnvelope
+from app.realtime.model_config import ModelConfig
+from app.realtime.sse_parser import parse_conversation_stream
 
 logger = logging.getLogger(__name__)
 
 
-# ── 모델 설정 ──────────────────────────────────────────
-
-
-@dataclass
-class ModelConfig:
-    id: str = ""
-    provider_mode: Literal["token", "local"] = "local"
-    provider_name: str = ""
-    model_name: str = ""
-    api_key: str | None = None
-    endpoint: str | None = None
-    is_default: bool = False
-    supports_stream: bool = True
-    supports_realtime: bool = False
-    transport: Literal["http_sse", "websocket"] = "http_sse"
-    input_modalities: str = "text"
-    output_modalities: str = "text"
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> ModelConfig:
-        return cls(
-            id=str(d.get("id", "")),
-            provider_mode=d.get("provider_mode", "local"),
-            provider_name=str(d.get("provider_name", "")),
-            model_name=str(d.get("model_name", "")),
-            api_key=d.get("api_key"),
-            endpoint=d.get("endpoint"),
-            is_default=bool(d.get("is_default", False)),
-            supports_stream=bool(d.get("supports_stream", True)),
-            supports_realtime=bool(d.get("supports_realtime", False)),
-            transport=d.get("transport", "http_sse"),
-            input_modalities=str(d.get("input_modalities", "text")),
-            output_modalities=str(d.get("output_modalities", "text")),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "provider_mode": self.provider_mode,
-            "provider_name": self.provider_name,
-            "model_name": self.model_name,
-            "is_default": self.is_default,
-            "supports_stream": self.supports_stream,
-            "supports_realtime": self.supports_realtime,
-            "transport": self.transport,
-            "input_modalities": self.input_modalities,
-            "output_modalities": self.output_modalities,
-        }
-        if self.api_key:
-            d["api_key"] = self.api_key
-        if self.endpoint:
-            d["endpoint"] = self.endpoint
-        return d
+__all__ = [
+    "ModelConfig",
+    "OllamaConfig",
+    "OllamaClient",
+    "StreamChunk",
+    "get_ollama_client",
+    "cleanup_ollama_client",
+]
 
 
 # ── 클라이언트 설정 ────────────────────────────────────
@@ -86,6 +42,8 @@ class OllamaConfig:
     base_url: str = field(default_factory=_default_ollama_base_url)
     timeout: float = 60.0
     auth_token: str = ""
+    client_id: str = ""
+    runtime_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -115,6 +73,9 @@ class OllamaClient:
         h: dict[str, str] = {"Content-Type": "application/json"}
         if self.config.auth_token:
             h["Authorization"] = f"Bearer {self.config.auth_token}"
+        if self.config.client_id:
+            h["x-client-id"] = self.config.client_id
+        h.update(self.config.runtime_headers)
         return h
 
     async def close(self) -> None:
@@ -178,7 +139,6 @@ class OllamaClient:
         for m in self._models:
             if m.is_default:
                 return m
-        # default 없으면 첫 번째 모델
         for m in self._models:
             return m
         return None
@@ -220,9 +180,7 @@ class OllamaClient:
         self.reset_cancellation()
         session = await self._get_session()
 
-        payload = {
-            "message": prompt,
-        }
+        payload = {"message": prompt}
 
         headers = self._auth_headers()
         headers["Accept"] = "text/event-stream"
@@ -242,73 +200,11 @@ class OllamaClient:
                     )
                     return
 
-                current_event = ""
-
-                async for raw_line in resp.content:
-                    if self._cancelled:
-                        break
-
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-
-                    if not line:
-                        current_event = ""
-                        continue
-
-                    if line.startswith("event:"):
-                        current_event = line[len("event:") :].strip()
-                        continue
-
-                    if not line.startswith("data:"):
-                        continue
-
-                    data_str = line[len("data:") :].strip()
-                    try:
-                        data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if current_event == "meta":
-                        continue
-
-                    if current_event == "classification":
-                        yield EventEnvelope(
-                            type="conversation.classification",
-                            payload=data,
-                        )
-
-                    elif current_event == "thinking":
-                        yield EventEnvelope(
-                            type="conversation.thinking",
-                            payload=data,
-                        )
-
-                    elif current_event == "plan_step":
-                        yield EventEnvelope(
-                            type="conversation.plan_step",
-                            payload=data,
-                        )
-
-                    elif current_event == "assistant_delta":
-                        content = data.get("content", "")
-                        if content:
-                            yield EventEnvelope(
-                                type="conversation.delta",
-                                payload={"text": content},
-                            )
-
-                    elif current_event == "assistant_done":
-                        yield EventEnvelope(
-                            type="conversation.done",
-                            payload={"text": data.get("content", "")},
-                        )
-                        return
-
-                    elif current_event == "error":
-                        yield EventEnvelope(
-                            type="conversation.error",
-                            payload={"message": data.get("content", "unknown error")},
-                        )
-                        return
+                async for event in parse_conversation_stream(
+                    resp,
+                    is_cancelled=lambda: self._cancelled,
+                ):
+                    yield event
 
         except aiohttp.ClientError as e:
             logger.error(f"요청 에러: {e}")
