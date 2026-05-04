@@ -79,7 +79,13 @@ export default function App({ token, onLogout }: AppProps) {
         const bridge = (window as any).jarvisBridge;
         if (!bridge?.onMinimizeToSphere) return;
         const c1 = bridge.onMinimizeToSphere(() => setViewMode("minimizing"));
-        const c2 = bridge.onRestoreFromSphere(() => setViewMode("restoring"));
+        const c2 = bridge.onRestoreFromSphere((text?: string) => {
+            setViewMode("restoring");
+            if (text) {
+                setAssistantSubtitle(text);
+                setIsSpeaking(true);
+            }
+        });
         const c3 = bridge.onSphereReady?.(() => setViewMode("sphere"));
         return () => {
             c1?.();
@@ -400,6 +406,73 @@ export default function App({ token, onLogout }: AppProps) {
     const handleSphereClick = () =>
         (window as any).jarvisBridge?.restoreWindow?.();
 
+    // ── Manual Drag Logic for Sphere Mode ────────────────
+    const dragInfo = useRef({
+        isDragging: false,
+        startX: 0,
+        startY: 0,
+        winX: 0,
+        winY: 0,
+        moved: false,
+    });
+
+    const handleDragStart = async (e: React.MouseEvent) => {
+        if (viewMode !== "sphere") return;
+        const bridge = (window as any).jarvisBridge;
+        const bounds = await bridge.getWindowBounds();
+        if (!bounds) return;
+
+        dragInfo.current = {
+            isDragging: true,
+            startX: e.screenX,
+            startY: e.screenY,
+            winX: bounds.x,
+            winY: bounds.y,
+            moved: false,
+        };
+    };
+
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            if (!dragInfo.current.isDragging) return;
+
+            const deltaX = e.screenX - dragInfo.current.startX;
+            const deltaY = e.screenY - dragInfo.current.startY;
+
+            if (
+                !dragInfo.current.moved &&
+                (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5)
+            ) {
+                dragInfo.current.moved = true;
+            }
+
+            if (dragInfo.current.moved) {
+                const bridge = (window as any).jarvisBridge;
+                bridge.moveWindow({
+                    x: Math.round(dragInfo.current.winX + deltaX),
+                    y: Math.round(dragInfo.current.winY + deltaY),
+                    width: 560,
+                    height: 160,
+                });
+            }
+        };
+
+        const handleMouseUp = () => {
+            if (!dragInfo.current.isDragging) return;
+            if (!dragInfo.current.moved) {
+                handleSphereClick();
+            }
+            dragInfo.current.isDragging = false;
+        };
+
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", handleMouseMove);
+            window.removeEventListener("mouseup", handleMouseUp);
+        };
+    }, [handleSphereClick]);
+
     const activeSubtitle = isSpeaking ? assistantSubtitle : userSubtitle;
     const isNormal = viewMode === "waveform" || viewMode === "restoring";
     const isSphere = viewMode === "sphere";
@@ -486,13 +559,16 @@ export default function App({ token, onLogout }: AppProps) {
 
             {isSphere && (
                 <div
+                    onMouseDown={handleDragStart}
                     style={{
                         position: "absolute",
                         inset: 0,
                         zIndex: 50,
                         display: "flex",
                         alignItems: "center",
-                        pointerEvents: "none",
+                        justifyContent: "flex-end", // 구체 클릭 영역을 오른쪽으로 밀어줌
+                        pointerEvents: "auto", // 전체 영역에서 마우스 이벤트를 받도록 변경
+                        cursor: "pointer",
                     }}
                 >
                     {/* Speech bubble — left side */}
@@ -537,7 +613,6 @@ export default function App({ token, onLogout }: AppProps) {
                     ) : null}
                     {/* Sphere click area */}
                     <div
-                        onClick={handleSphereClick}
                         style={{
                             width: 120,
                             minWidth: 120,
