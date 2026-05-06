@@ -48,7 +48,7 @@ async def parse_conversation_stream(
         if is_cancelled():
             break
 
-        line = raw_line.decode("utf-8", errors="replace").strip()
+        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
 
         if not line:
             current_event = ""
@@ -61,7 +61,9 @@ async def parse_conversation_stream(
         if not line.startswith("data:"):
             continue
 
-        data_str = line[len("data:") :].strip()
+        data_str = line[len("data:") :]
+        if data_str.startswith(" "):
+            data_str = data_str[1:]
         try:
             data = json.loads(data_str)
         except json.JSONDecodeError:
