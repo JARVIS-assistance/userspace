@@ -14,19 +14,6 @@ def _escape_applescript(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-APP_ALIASES = {
-    "chrome": "Google Chrome",
-    "google chrome": "Google Chrome",
-    "firefox": "Firefox",
-    "mozilla firefox": "Firefox",
-    "safari": "Safari",
-    "sublime-text": "Sublime Text",
-    "sublime_text": "Sublime Text",
-    "sublime text": "Sublime Text",
-    "sublimetext": "Sublime Text",
-    "sublime": "Sublime Text",
-}
-
 ABSTRACT_APP_TARGETS = {
     "browser",
     "default_browser",
@@ -97,7 +84,7 @@ def _normalize_command_and_app(action: ClientAction) -> tuple[str, str]:
         or str((action.args or {}).get("app_name") or "")
         or str((action.args or {}).get("application") or "")
     ).strip()
-    return command, APP_ALIASES.get(app_name.lower(), app_name) if app_name else ""
+    return command, app_name
 
 
 def _command_from_type(action_type: str) -> str | None:

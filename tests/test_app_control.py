@@ -9,12 +9,12 @@ from app.actions.models import ClientAction
 
 
 class AppControlTests(unittest.TestCase):
-    def test_open_chrome_alias(self) -> None:
+    def test_open_uses_exact_model_app_target(self) -> None:
         command, app = _normalize_command_and_app(
             ClientAction(
                 type="app_control",
                 command="open",
-                target="chrome",
+                target="Google Chrome",
                 payload=None,
                 args={},
                 description="Chrome 실행",
@@ -24,22 +24,20 @@ class AppControlTests(unittest.TestCase):
         self.assertEqual(command, "open")
         self.assertEqual(app, "Google Chrome")
 
-    def test_sublime_alias(self) -> None:
-        for target in ("sublime-text", "sublime_text", "sublimetext"):
-            with self.subTest(target=target):
-                command, app = _normalize_command_and_app(
-                    ClientAction(
-                        type="app_control",
-                        command="open",
-                        target=target,
-                        payload=None,
-                        args={},
-                        description="Sublime 실행",
-                        requires_confirm=False,
-                    )
-                )
-                self.assertEqual(command, "open")
-                self.assertEqual(app, "Sublime Text")
+    def test_app_target_is_not_alias_mapped_locally(self) -> None:
+        command, app = _normalize_command_and_app(
+            ClientAction(
+                type="app_control",
+                command="open",
+                target="sublime_text",
+                payload=None,
+                args={},
+                description="Sublime 실행",
+                requires_confirm=False,
+            )
+        )
+        self.assertEqual(command, "open")
+        self.assertEqual(app, "sublime_text")
 
     def test_legacy_default_browser_command_is_not_reinterpreted(self) -> None:
         command, app = _normalize_command_and_app(
@@ -101,7 +99,7 @@ class AppControlTests(unittest.TestCase):
             ClientAction(
                 type="app_control",
                 command="new_file",
-                target="sublime_text",
+                target="Sublime Text",
                 payload=None,
                 args={},
                 description="Sublime 새 파일",
