@@ -267,7 +267,7 @@ class ConversationManager:
                         and len(done_text) > len(self._current_response)
                     ):
                         self._current_response = done_text
-                    break
+                    continue
         
         except asyncio.CancelledError:
             logger.info("LLM generation cancelled")

@@ -96,7 +96,7 @@ async def parse_conversation_stream(
                 if key in data:
                     payload[key] = data[key]
             yield EventEnvelope(type="conversation.done", payload=payload)
-            return
+            continue
 
         if current_event == "error":
             yield EventEnvelope(

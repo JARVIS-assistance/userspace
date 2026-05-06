@@ -49,6 +49,32 @@ class SSEParserTests(unittest.TestCase):
         self.assertEqual(events[0].type, "conversation.delta")
         self.assertEqual(events[0].payload["text"], " hello")
 
+    def test_continues_after_assistant_done_for_late_action_dispatch(self) -> None:
+        async def run():
+            response = _FakeResponse(
+                [
+                    b"event: assistant_done\n",
+                    b'data: {"content":"done"}\n',
+                    b"\n",
+                    b"event: action_dispatch\n",
+                    b'data: {"action_id":"a1","request_id":"r1","action":{"type":"open_url","target":"about:blank","args":{},"requires_confirm":false}}\n',
+                    b"\n",
+                ]
+            )
+            return [
+                event
+                async for event in parse_conversation_stream(
+                    response, is_cancelled=lambda: False
+                )
+            ]
+
+        events = asyncio.run(run())
+
+        self.assertEqual([event.type for event in events], [
+            "conversation.done",
+            "conversation.action_dispatch",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
