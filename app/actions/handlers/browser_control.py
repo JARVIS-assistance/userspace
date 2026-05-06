@@ -12,11 +12,11 @@ from app.actions.handlers.base import HandlerError
 from app.actions.models import ClientAction
 
 
-def make_browser_control(enabled: bool):
+def make_browser_control(enabled: bool, default_browser: str = DEFAULT_BROWSER):
     async def browser_control(action: ClientAction) -> dict[str, Any]:
         if not enabled:
             raise HandlerError("browser_control disabled by policy")
-        command = (action.command or "open_url").lower()
+        command = _normalize_command(action)
         target = (action.target or action.payload or "").strip()
 
         if command in {"open", "open_url", "navigate"}:
@@ -28,7 +28,7 @@ def make_browser_control(enabled: bool):
                 if isinstance(raw, str):
                     browser = raw
             try:
-                used = await open_in_browser(target, browser=browser or DEFAULT_BROWSER)
+                used = await open_in_browser(target, browser=browser or default_browser)
             except RuntimeError as e:
                 raise HandlerError(str(e)) from e
             return {"command": command, "opened": target, "browser": used}
@@ -71,6 +71,20 @@ def make_browser_control(enabled: bool):
         return {"command": command}
 
     return browser_control
+
+
+def _normalize_command(action: ClientAction) -> str:
+    if action.command:
+        return action.command.strip().lower().replace(".", "_")
+    action_type = str(action.type).strip().lower()
+    return {
+        "browser.extract_dom": "extract_dom",
+        "browser.click": "click_element",
+        "browser.type": "type_element",
+        "browser.select_result": "select_result",
+        "browser.navigate": "navigate",
+        "browser.open": "open",
+    }.get(action_type, "open_url")
 
 
 async def _select_result(action: ClientAction) -> dict[str, Any]:

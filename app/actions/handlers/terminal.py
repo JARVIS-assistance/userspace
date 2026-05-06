@@ -76,7 +76,7 @@ def make_terminal(
     async def terminal(action: ClientAction) -> dict[str, Any]:
         if not enabled:
             raise HandlerError("terminal disabled by policy")
-        command = (action.command or action.payload or "").strip()
+        command = _terminal_command(action)
         if not command:
             raise HandlerError("missing terminal command")
         try:
@@ -126,3 +126,16 @@ def make_terminal(
         }
 
     return terminal
+
+
+def _terminal_command(action: ClientAction) -> str:
+    args = action.args or {}
+    raw = args.get("command")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if action.payload and action.payload.strip():
+        return action.payload.strip()
+    command = (action.command or "").strip()
+    if command and command not in {"execute", "run"}:
+        return command
+    return ""

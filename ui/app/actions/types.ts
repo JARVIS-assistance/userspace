@@ -1,7 +1,9 @@
 // Backend OpenAPI ClientAction과 동일 (subset)
 export type ClientActionType =
     | "terminal" | "app_control" | "file_write" | "file_read"
-    | "open_url" | "browser_control" | "web_search" | "notify" | "clipboard"
+    | "open_url" | "browser" | "browser.open" | "browser.navigate" | "browser.search" | "browser.select_result"
+    | "browser.extract_dom" | "browser.click" | "browser.type"
+    | "browser_control" | "web_search" | "notify" | "clipboard"
     | "mouse_click" | "mouse_drag" | "keyboard_type" | "hotkey" | "screenshot";
 
 export interface ClientAction {
@@ -24,7 +26,17 @@ export interface PendingConfirm {
     timestamp: number;
 }
 
-export type FeedStatus = "started" | "completed" | "failed" | "rejected" | "timeout";
+export type FeedStatus =
+    | "queued"
+    | "waiting_confirmation"
+    | "running"
+    | "completed"
+    | "failed"
+    | "timeout"
+    | "rejected"
+    | "invalid"
+    | "retrying_compile"
+    | "suppressed";
 export type FeedKind = "action" | "step";
 
 export interface FeedEntry {

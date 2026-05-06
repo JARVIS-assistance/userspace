@@ -270,9 +270,13 @@ def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
         "platform": runtime_headers.get("X-Client-Platform", ""),
         "shell": runtime_headers.get("X-Client-Shell", ""),
         "browser": runtime_headers.get("X-Client-Browser", ""),
+        "search_engine": runtime_headers.get("X-Client-Search-Engine", ""),
         "timezone": runtime_headers.get("X-Client-Timezone", ""),
         "calendar_provider": runtime_headers.get("X-Client-Calendar-Provider", ""),
         "capabilities": capabilities,
+        "enabled_capabilities": _split_header_list(
+            runtime_headers.get("X-Client-Enabled-Capabilities", "")
+        ),
         "applications": _split_header_list(runtime_headers.get("X-Client-Applications", "")),
         "terminal": {
             "enabled": runtime_headers.get("X-Client-Terminal-Enabled") == "true",
@@ -286,7 +290,7 @@ def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
         "action_contract": {
             "version": runtime_headers.get("X-Client-Action-Contract-Version", "1.0"),
             "instruction": runtime_headers.get("X-Client-Action-Contract", ""),
-            "enabled_types": [item for item in capabilities if "/" not in item],
+            "enabled_types": [item for item in capabilities if "/" not in item and "." not in item],
         },
     }
 

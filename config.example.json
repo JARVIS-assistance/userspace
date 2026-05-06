@@ -36,6 +36,7 @@
       "notify",
       "clipboard",
       "open_url",
+      "browser",
       "browser_control",
       "app_control",
       "web_search"
@@ -50,6 +51,36 @@
       "keyboard_type",
       "hotkey"
     ],
+
+    "enabled_capabilities": [
+      "browser.open",
+      "browser.navigate",
+      "browser.search",
+      "browser.select_result",
+      "open_url",
+      "notify",
+      "clipboard.copy"
+    ],
+
+    "force_confirm_capabilities": [
+      "browser.click",
+      "browser.type",
+      "keyboard.type",
+      "keyboard.hotkey",
+      "clipboard.paste",
+      "terminal.run",
+      "file.write",
+      "mouse.click",
+      "mouse.drag",
+      "calendar.create",
+      "calendar.update",
+      "calendar.delete"
+    ],
+
+    "browser": {
+      "default_browser": "chrome",
+      "search_engine": "google"
+    },
 
     "file_write": {
       "_comment": "쓰기 가능 경로(prefix). 외부 경로는 status=failed.",

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
     ActionsConfig,
-    FALLBACK_ALL_TYPES,
-    TYPE_DESCRIPTIONS,
+    CAPABILITY_DESCRIPTIONS,
+    FALLBACK_ALL_CAPABILITIES,
 } from "./actionsConfig";
 import { css } from "./styles";
 import Toggle from "./Toggle";
@@ -15,6 +15,30 @@ interface Props {
     error: string | null;
 }
 
+const GROUPS = [
+    {
+        title: "Browser",
+        capabilities: [
+            "browser.open",
+            "browser.navigate",
+            "browser.search",
+            "browser.extract_dom",
+            "browser.click",
+            "browser.type",
+        ],
+    },
+    { title: "Applications", capabilities: ["app.open", "app.focus"] },
+    {
+        title: "Input",
+        capabilities: ["keyboard.type", "keyboard.hotkey", "mouse.click", "mouse.drag"],
+    },
+    { title: "Screen", capabilities: ["screen.screenshot"] },
+    {
+        title: "System",
+        capabilities: ["terminal.run", "file.read", "file.write", "clipboard.copy", "clipboard.paste"],
+    },
+];
+
 export default function ActionsTab({
     config,
     onSave,
@@ -22,157 +46,168 @@ export default function ActionsTab({
     saving,
     error,
 }: Props) {
-    // 처음 열릴 때 한 번 데이터 요청
     useEffect(() => {
         onRequestRefresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const [enabledDraft, setEnabledDraft] = useState<Set<string>>(new Set());
-    const [forceDraft, setForceDraft] = useState<Set<string>>(new Set());
+    const [confirmDraft, setConfirmDraft] = useState<Set<string>>(new Set());
+    const [browserDraft, setBrowserDraft] = useState({
+        default_browser: "chrome",
+        search_engine: "google",
+    });
+    const [testStatus, setTestStatus] = useState("");
 
-    // 서버에서 받은 config로 draft 동기화
     useEffect(() => {
         if (!config) return;
-        setEnabledDraft(new Set(config.enabled_types));
-        setForceDraft(new Set(config.force_confirm_types));
+        setEnabledDraft(new Set(config.enabled_capabilities || []));
+        setConfirmDraft(new Set(config.force_confirm_capabilities || []));
+        setBrowserDraft({
+            default_browser: config.browser?.default_browser || "chrome",
+            search_engine: config.browser?.search_engine || "google",
+        });
     }, [config]);
 
-    const allTypes = useMemo<string[]>(() => {
-        if (config?.all_types && config.all_types.length > 0) return config.all_types;
-        return FALLBACK_ALL_TYPES;
+    const allCapabilities = useMemo(() => {
+        if (config?.all_capabilities?.length) return config.all_capabilities;
+        return FALLBACK_ALL_CAPABILITIES;
     }, [config]);
 
     if (!config) {
         return (
-            <p
-                style={{
-                    color: "rgba(120,80,40,0.55)",
-                    fontSize: 13,
-                    textAlign: "center",
-                    padding: "20px 0",
-                }}
-            >
+            <p style={emptyStyle}>
                 LOADING ACTIONS CONFIG...
             </p>
         );
     }
 
     const dirty =
-        !setsEqual(enabledDraft, new Set(config.enabled_types)) ||
-        !setsEqual(forceDraft, new Set(config.force_confirm_types));
+        !setsEqual(enabledDraft, new Set(config.enabled_capabilities || []))
+        || !setsEqual(confirmDraft, new Set(config.force_confirm_capabilities || []))
+        || browserDraft.default_browser !== (config.browser?.default_browser || "chrome")
+        || browserDraft.search_engine !== (config.browser?.search_engine || "google");
 
-    const toggleEnabled = (t: string, v: boolean) => {
+    const toggleEnabled = (capability: string, value: boolean) => {
         const next = new Set(enabledDraft);
-        if (v) next.add(t);
-        else next.delete(t);
+        if (value) next.add(capability);
+        else next.delete(capability);
         setEnabledDraft(next);
-        // 비활성화하면 force_confirm에서도 빼는 게 자연스러움
-        if (!v && forceDraft.has(t)) {
-            const f = new Set(forceDraft);
-            f.delete(t);
-            setForceDraft(f);
+        if (!value && confirmDraft.has(capability)) {
+            const confirmNext = new Set(confirmDraft);
+            confirmNext.delete(capability);
+            setConfirmDraft(confirmNext);
         }
     };
 
-    const toggleForce = (t: string, v: boolean) => {
-        const next = new Set(forceDraft);
-        if (v) next.add(t);
-        else next.delete(t);
-        setForceDraft(next);
+    const toggleConfirm = (capability: string, value: boolean) => {
+        const next = new Set(confirmDraft);
+        if (value) next.add(capability);
+        else next.delete(capability);
+        setConfirmDraft(next);
     };
 
     const handleSave = () => {
         onSave({
-            enabled_types: Array.from(enabledDraft),
-            force_confirm_types: Array.from(forceDraft),
-        });
+            enabled_capabilities: Array.from(enabledDraft),
+            force_confirm_capabilities: Array.from(confirmDraft),
+            browser: browserDraft,
+        } as Partial<ActionsConfig>);
     };
 
     const handleReset = () => {
-        if (!config) return;
-        setEnabledDraft(new Set(config.enabled_types));
-        setForceDraft(new Set(config.force_confirm_types));
+        setEnabledDraft(new Set(config.enabled_capabilities || []));
+        setConfirmDraft(new Set(config.force_confirm_capabilities || []));
+        setBrowserDraft({
+            default_browser: config.browser?.default_browser || "chrome",
+            search_engine: config.browser?.search_engine || "google",
+        });
+        setTestStatus("");
+    };
+
+    const runTest = (kind: "open" | "search") => {
+        const capability = kind === "open" ? "browser.open" : "browser.search";
+        if (!enabledDraft.has(capability)) {
+            setTestStatus(`${capability} disabled`);
+            return;
+        }
+        setTestStatus(
+            kind === "open"
+                ? `Ready: browser.open via ${browserDraft.default_browser}`
+                : `Ready: browser.search via ${browserDraft.search_engine}`,
+        );
     };
 
     return (
         <div>
-            <p
-                style={{
-                    fontSize: 11,
-                    color: "rgba(120,80,40,0.6)",
-                    fontFamily: "monospace",
-                    letterSpacing: "0.05em",
-                    margin: "0 0 16px",
-                    lineHeight: 1.5,
-                }}
-            >
-                ENABLED: 액션 타입 허용 여부 · CONFIRM: 사용자 확인 강제 여부
-                (백엔드가 requires_confirm=false 보내도 적용)
+            <p style={hintStyle}>
+                BACKEND QUEUED ACTIONS ONLY · action_id가 있는 큐 액션만 실행
             </p>
 
-            <div
-                style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto auto",
-                    columnGap: 12,
-                    rowGap: 0,
-                    alignItems: "center",
-                    marginBottom: 16,
-                }}
-            >
-                <ColumnHeader>TYPE</ColumnHeader>
-                <ColumnHeader align="center">ENABLED</ColumnHeader>
-                <ColumnHeader align="center">CONFIRM</ColumnHeader>
+            <section style={sectionStyle}>
+                <div style={sectionHeaderStyle}>Browser</div>
+                <div style={selectRowStyle}>
+                    <label style={labelStyle}>
+                        Default browser
+                        <select
+                            value={browserDraft.default_browser}
+                            onChange={(event) => setBrowserDraft((s) => ({
+                                ...s,
+                                default_browser: event.target.value,
+                            }))}
+                            style={selectStyle}
+                        >
+                            {["chrome", "safari", "firefox", "edge", "default"].map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <label style={labelStyle}>
+                        Search engine
+                        <select
+                            value={browserDraft.search_engine}
+                            onChange={(event) => setBrowserDraft((s) => ({
+                                ...s,
+                                search_engine: event.target.value,
+                            }))}
+                            style={selectStyle}
+                        >
+                            {["google", "naver", "duckduckgo"].map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                            ))}
+                        </select>
+                    </label>
+                </div>
+                <div style={testRowStyle}>
+                    <button style={css.btn("ghost")} onClick={() => runTest("open")}>
+                        Test open
+                    </button>
+                    <button style={css.btn("ghost")} onClick={() => runTest("search")}>
+                        Test search
+                    </button>
+                    <span style={statusStyle}>{testStatus || "No test run"}</span>
+                </div>
+            </section>
 
-                {allTypes.map((t) => {
-                    const en = enabledDraft.has(t);
-                    const fc = forceDraft.has(t);
-                    return (
-                        <Row
-                            key={t}
-                            type={t}
-                            enabled={en}
-                            forceConfirm={fc}
-                            onEnabledChange={(v) => toggleEnabled(t, v)}
-                            onForceConfirmChange={(v) => toggleForce(t, v)}
-                        />
-                    );
-                })}
-            </div>
+            {GROUPS.map((group) => (
+                <CapabilityGroup
+                    key={group.title}
+                    title={group.title}
+                    capabilities={group.capabilities.filter((cap) => allCapabilities.includes(cap))}
+                    enabled={enabledDraft}
+                    confirm={confirmDraft}
+                    onEnabledChange={toggleEnabled}
+                    onConfirmChange={toggleConfirm}
+                />
+            ))}
 
-            {error && (
-                <p
-                    style={{
-                        fontSize: 11,
-                        color: "rgba(220,80,60,0.85)",
-                        fontFamily: "monospace",
-                        margin: "0 0 12px",
-                    }}
-                >
-                    {error}
-                </p>
-            )}
+            {error && <p style={errorStyle}>{error}</p>}
 
-            <div
-                style={{
-                    display: "flex",
-                    justifyContent: "flex-end",
-                    gap: 10,
-                }}
-            >
-                <button
-                    style={css.btn("ghost")}
-                    onClick={handleReset}
-                    disabled={!dirty || saving}
-                >
+            <div style={footerStyle}>
+                <button style={css.btn("ghost")} onClick={handleReset} disabled={!dirty || saving}>
                     되돌리기
                 </button>
-                <button
-                    style={css.btn("primary")}
-                    onClick={handleSave}
-                    disabled={!dirty || saving}
-                >
+                <button style={css.btn("primary")} onClick={handleSave} disabled={!dirty || saving}>
                     {saving ? "저장 중..." : "저장"}
                 </button>
             </div>
@@ -180,80 +215,71 @@ export default function ActionsTab({
     );
 }
 
-// ── 서브 컴포넌트 ────────────────────────────────────
-
-function ColumnHeader({
-    children,
-    align = "left",
+function CapabilityGroup({
+    title,
+    capabilities,
+    enabled,
+    confirm,
+    onEnabledChange,
+    onConfirmChange,
 }: {
-    children: React.ReactNode;
-    align?: "left" | "center";
+    title: string;
+    capabilities: string[];
+    enabled: Set<string>;
+    confirm: Set<string>;
+    onEnabledChange: (capability: string, value: boolean) => void;
+    onConfirmChange: (capability: string, value: boolean) => void;
 }) {
     return (
-        <div
-            style={{
-                fontSize: 10,
-                letterSpacing: "0.18em",
-                color: "rgba(120,80,40,0.55)",
-                fontFamily: "monospace",
-                padding: "8px 0",
-                borderBottom: "1px solid rgba(120,80,30,0.18)",
-                textAlign: align,
-            }}
-        >
-            {children}
-        </div>
+        <section style={sectionStyle}>
+            <div style={gridStyle}>
+                <div style={sectionHeaderStyle}>{title}</div>
+                <ColumnHeader>ENABLED</ColumnHeader>
+                <ColumnHeader>CONFIRM</ColumnHeader>
+                {capabilities.map((capability) => (
+                    <CapabilityRow
+                        key={capability}
+                        capability={capability}
+                        enabled={enabled.has(capability)}
+                        confirm={confirm.has(capability)}
+                        onEnabledChange={(value) => onEnabledChange(capability, value)}
+                        onConfirmChange={(value) => onConfirmChange(capability, value)}
+                    />
+                ))}
+            </div>
+        </section>
     );
 }
 
-function Row({
-    type,
+function CapabilityRow({
+    capability,
     enabled,
-    forceConfirm,
+    confirm,
     onEnabledChange,
-    onForceConfirmChange,
+    onConfirmChange,
 }: {
-    type: string;
+    capability: string;
     enabled: boolean;
-    forceConfirm: boolean;
-    onEnabledChange: (v: boolean) => void;
-    onForceConfirmChange: (v: boolean) => void;
+    confirm: boolean;
+    onEnabledChange: (value: boolean) => void;
+    onConfirmChange: (value: boolean) => void;
 }) {
     return (
         <>
-            <div
-                style={{
-                    padding: "10px 0",
-                    borderBottom: "1px solid rgba(120,80,30,0.1)",
-                }}
-            >
-                <div
-                    style={{
-                        fontSize: 13,
-                        color: "rgba(210,180,140,0.92)",
-                        fontFamily: "monospace",
-                    }}
-                >
-                    {type}
-                </div>
-                <div
-                    style={{
-                        fontSize: 10,
-                        color: "rgba(120,80,40,0.55)",
-                        marginTop: 2,
-                    }}
-                >
-                    {TYPE_DESCRIPTIONS[type] || ""}
+            <div style={capabilityCellStyle}>
+                <div style={capabilityNameStyle}>{capability}</div>
+                <div style={capabilityDescriptionStyle}>
+                    {CAPABILITY_DESCRIPTIONS[capability] || ""}
                 </div>
             </div>
             <CellToggle value={enabled} onChange={onEnabledChange} />
-            <CellToggle
-                value={forceConfirm}
-                onChange={onForceConfirmChange}
-                disabled={!enabled}
-            />
+            <CellToggle value={confirm} onChange={onConfirmChange} disabled={!enabled} />
         </>
     );
+}
+
+function ColumnHeader({ children }: { children: React.ReactNode }) {
+    return <div style={columnHeaderStyle}>{children}</div>;
 }
 
 function CellToggle({
@@ -262,20 +288,11 @@ function CellToggle({
     disabled = false,
 }: {
     value: boolean;
-    onChange: (v: boolean) => void;
+    onChange: (value: boolean) => void;
     disabled?: boolean;
 }) {
     return (
-        <div
-            style={{
-                padding: "10px 0",
-                borderBottom: "1px solid rgba(120,80,30,0.1)",
-                display: "flex",
-                justifyContent: "center",
-                opacity: disabled ? 0.4 : 1,
-                pointerEvents: disabled ? "none" : "auto",
-            }}
-        >
+        <div style={{ ...toggleCellStyle, opacity: disabled ? 0.4 : 1 }}>
             <Toggle value={value} onChange={onChange} label="" />
         </div>
     );
@@ -286,3 +303,119 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     for (const v of a) if (!b.has(v)) return false;
     return true;
 }
+
+const emptyStyle: React.CSSProperties = {
+    color: "rgba(120,80,40,0.55)",
+    fontSize: 13,
+    textAlign: "center",
+    padding: "20px 0",
+};
+
+const hintStyle: React.CSSProperties = {
+    fontSize: 11,
+    color: "rgba(120,80,40,0.6)",
+    fontFamily: "monospace",
+    letterSpacing: "0.05em",
+    margin: "0 0 16px",
+    lineHeight: 1.5,
+};
+
+const sectionStyle: React.CSSProperties = {
+    borderTop: "1px solid rgba(120,80,30,0.18)",
+    padding: "12px 0",
+};
+
+const gridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr 78px 78px",
+    columnGap: 12,
+    alignItems: "center",
+};
+
+const sectionHeaderStyle: React.CSSProperties = {
+    fontSize: 11,
+    letterSpacing: "0.16em",
+    color: "rgba(220,150,80,0.85)",
+    fontFamily: "monospace",
+    padding: "8px 0",
+};
+
+const columnHeaderStyle: React.CSSProperties = {
+    fontSize: 9,
+    letterSpacing: "0.12em",
+    color: "rgba(120,80,40,0.55)",
+    fontFamily: "monospace",
+    textAlign: "center",
+};
+
+const capabilityCellStyle: React.CSSProperties = {
+    padding: "9px 0",
+    borderTop: "1px solid rgba(120,80,30,0.08)",
+};
+
+const capabilityNameStyle: React.CSSProperties = {
+    fontSize: 12,
+    color: "rgba(210,180,140,0.92)",
+    fontFamily: "monospace",
+};
+
+const capabilityDescriptionStyle: React.CSSProperties = {
+    fontSize: 10,
+    color: "rgba(120,80,40,0.55)",
+    marginTop: 2,
+};
+
+const toggleCellStyle: React.CSSProperties = {
+    display: "flex",
+    justifyContent: "center",
+    borderTop: "1px solid rgba(120,80,30,0.08)",
+    padding: "9px 0",
+};
+
+const selectRowStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+};
+
+const labelStyle: React.CSSProperties = {
+    display: "grid",
+    gap: 6,
+    color: "rgba(160,130,100,0.8)",
+    fontSize: 11,
+    fontFamily: "monospace",
+};
+
+const selectStyle: React.CSSProperties = {
+    background: "#141414",
+    color: "rgba(230,200,160,0.95)",
+    border: "1px solid rgba(120,80,30,0.35)",
+    borderRadius: 6,
+    padding: "8px 10px",
+};
+
+const testRowStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+};
+
+const statusStyle: React.CSSProperties = {
+    fontSize: 10,
+    color: "rgba(150,180,210,0.75)",
+    fontFamily: "monospace",
+};
+
+const errorStyle: React.CSSProperties = {
+    fontSize: 11,
+    color: "rgba(220,80,60,0.85)",
+    fontFamily: "monospace",
+    margin: "0 0 12px",
+};
+
+const footerStyle: React.CSSProperties = {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 10,
+};

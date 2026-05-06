@@ -39,6 +39,8 @@ def make_app_control(enabled: bool):
         if not enabled:
             raise HandlerError("app_control disabled by policy")
         command, app_name = _normalize_command_and_app(action)
+        if command == "focus":
+            command = "activate"
         if command not in {"open", "activate", "quit", "close", "new_file", "new_tab"}:
             raise HandlerError(f"unsupported app_control command: {command!r}")
         if not app_name:
@@ -87,9 +89,23 @@ def make_app_control(enabled: bool):
 
 
 def _normalize_command_and_app(action: ClientAction) -> tuple[str, str]:
-    command = (action.command or "open").strip().lower()
-    app_name = (action.target or action.payload or "").strip()
+    command = (action.command or _command_from_type(action.type) or "open").strip().lower()
+    app_name = (
+        action.target
+        or action.payload
+        or str((action.args or {}).get("app") or "")
+        or str((action.args or {}).get("app_name") or "")
+        or str((action.args or {}).get("application") or "")
+    ).strip()
     return command, APP_ALIASES.get(app_name.lower(), app_name) if app_name else ""
+
+
+def _command_from_type(action_type: str) -> str | None:
+    return {
+        "app.open": "open",
+        "app.focus": "focus",
+        "app.close": "close",
+    }.get(str(action_type).strip().lower())
 
 
 async def _application_exists(app_name: str) -> bool:

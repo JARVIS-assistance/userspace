@@ -11,7 +11,51 @@ DEFAULT_CONFIG_PATH = "config.json"
 DEFAULT_DOTENV_PATH = ".env"
 DEFAULT_AUTH_API_BASE = "http://127.0.0.1:8001"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:8001"
-DEFAULT_SAFE_ACTION_TYPES = ("notify", "clipboard", "open_url")
+DEFAULT_SAFE_ACTION_TYPES = ("notify", "clipboard", "open_url", "browser")
+DEFAULT_SAFE_ACTION_CAPABILITIES = (
+    "browser.open",
+    "browser.navigate",
+    "browser.search",
+    "browser.select_result",
+    "open_url",
+    "notify",
+    "clipboard.copy",
+)
+
+CAPABILITIES_BY_ACTION_TYPE: dict[str, tuple[str, ...]] = {
+    "browser": ("browser.open", "browser.navigate", "browser.search"),
+    "open_url": ("browser.navigate", "browser.search", "open_url"),
+    "browser_control": (
+        "browser.extract_dom",
+        "browser.click",
+        "browser.type",
+        "browser.select_result",
+    ),
+    "app_control": ("app.open", "app.focus", "app.close"),
+    "keyboard_type": ("keyboard.type",),
+    "hotkey": ("keyboard.hotkey",),
+    "mouse_click": ("mouse.click",),
+    "mouse_drag": ("mouse.drag",),
+    "screenshot": ("screen.screenshot",),
+    "terminal": ("terminal.run",),
+    "file_write": ("file.write",),
+    "file_read": ("file.read",),
+    "clipboard": ("clipboard.copy", "clipboard.paste"),
+    "notify": ("notification.show", "notify"),
+    "calendar_control": (
+        "calendar.open",
+        "calendar.create",
+        "calendar.update",
+        "calendar.delete",
+    ),
+}
+SUPPORTED_ACTION_CAPABILITIES = tuple(
+    dict.fromkeys(
+        capability
+        for capabilities in CAPABILITIES_BY_ACTION_TYPE.values()
+        for capability in capabilities
+    )
+)
 # 사용자 컨펌이 강제로 필요한 액션 타입 (requires_confirm=False여도 모달 띄움).
 # 백엔드 LLM이 실수로 위험한 action을 silent 실행하지 못하게 막는 안전망.
 # 기본 force-confirm 대상: 외부 부작용이 큰 type만.
@@ -22,6 +66,20 @@ DEFAULT_FORCE_CONFIRM_TYPES = (
     "file_write",
     "mouse_click",
     "mouse_drag",
+)
+DEFAULT_FORCE_CONFIRM_CAPABILITIES = (
+    "browser.click",
+    "browser.type",
+    "keyboard.type",
+    "keyboard.hotkey",
+    "clipboard.paste",
+    "terminal.run",
+    "file.write",
+    "mouse.click",
+    "mouse.drag",
+    "calendar.create",
+    "calendar.update",
+    "calendar.delete",
 )
 # 안전 상한들
 DEFAULT_FILE_WRITE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -128,9 +186,18 @@ class ScreenshotSettings:
 
 
 @dataclass(frozen=True)
+class BrowserSettings:
+    default_browser: str = "chrome"
+    search_engine: str = "google"
+
+
+@dataclass(frozen=True)
 class ActionSettings:
     enabled_types: tuple[str, ...] = DEFAULT_SAFE_ACTION_TYPES
     force_confirm_types: tuple[str, ...] = DEFAULT_FORCE_CONFIRM_TYPES
+    enabled_capabilities: tuple[str, ...] = DEFAULT_SAFE_ACTION_CAPABILITIES
+    force_confirm_capabilities: tuple[str, ...] = DEFAULT_FORCE_CONFIRM_CAPABILITIES
+    browser: BrowserSettings = BrowserSettings()
     file_write: FileWriteSettings = FileWriteSettings()
     terminal: TerminalSettings = TerminalSettings()
     physical_input: PhysicalInputSettings = PhysicalInputSettings()
@@ -153,7 +220,18 @@ class ActionSettings:
         force_confirm_types = _string_tuple(
             source.get("force_confirm_types"), DEFAULT_FORCE_CONFIRM_TYPES
         )
+        explicit_enabled_capabilities = "enabled_capabilities" in source
+        enabled_capabilities = _string_tuple(
+            source.get("enabled_capabilities"), DEFAULT_SAFE_ACTION_CAPABILITIES
+        )
+        if not explicit_enabled_capabilities:
+            enabled_capabilities = _derive_capabilities(enabled_types, enabled_capabilities)
+        force_confirm_capabilities = _string_tuple(
+            source.get("force_confirm_capabilities"),
+            DEFAULT_FORCE_CONFIRM_CAPABILITIES,
+        )
 
+        browser = _safe_dict(source.get("browser"))
         file_write = _safe_dict(source.get("file_write"))
         terminal = _safe_dict(source.get("terminal"))
         physical_input = _safe_dict(source.get("physical_input"))
@@ -166,6 +244,14 @@ class ActionSettings:
         return cls(
             enabled_types=enabled_types,
             force_confirm_types=force_confirm_types,
+            enabled_capabilities=enabled_capabilities,
+            force_confirm_capabilities=force_confirm_capabilities,
+            browser=BrowserSettings(
+                default_browser=str(browser.get("default_browser", "chrome")).strip()
+                or "chrome",
+                search_engine=str(browser.get("search_engine", "google")).strip()
+                or "google",
+            ),
             file_write=FileWriteSettings(
                 allowed_paths=_string_tuple(file_write.get("allowed_paths"), ()),
                 max_bytes=int(
@@ -222,6 +308,16 @@ class Settings:
 
 def _safe_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _derive_capabilities(
+    enabled_types: tuple[str, ...],
+    defaults: tuple[str, ...],
+) -> tuple[str, ...]:
+    capabilities: list[str] = list(defaults)
+    for action_type in enabled_types:
+        capabilities.extend(CAPABILITIES_BY_ACTION_TYPE.get(action_type, ()))
+    return tuple(dict.fromkeys(capabilities))
 
 
 def _load_dotenv_into_environ(path: str | None = None) -> None:

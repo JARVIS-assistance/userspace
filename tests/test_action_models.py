@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from app.actions.dispatcher import ActionDispatcher
 from app.actions.models import PendingClientAction
+
+
+async def _noop() -> None:
+    return None
 
 
 class ActionModelTests(unittest.TestCase):
@@ -56,6 +61,99 @@ class ActionModelTests(unittest.TestCase):
 
         async def _noop() -> None:
             return None
+
+        asyncio.run(run())
+
+
+class DirectV2ActionDispatchTests(unittest.TestCase):
+    def test_app_open_v2_alias_dispatches_to_app_control_handler(self) -> None:
+        async def run() -> None:
+            from app.actions.dispatcher import ActionDispatcher
+            from app.actions.models import ClientAction, PendingClientAction
+            from app.actions.setup import register_default_handlers
+            from app.config import ActionSettings, ToggleSettings
+
+            dispatcher = ActionDispatcher(
+                emit=lambda envelope: _noop(),
+                enabled_types={"app_control"},
+                enabled_capabilities={"app.open"},
+            )
+            register_default_handlers(
+                dispatcher,
+                ActionSettings(
+                    enabled_types=("app_control",),
+                    enabled_capabilities=("app.open",),
+                    app_control=ToggleSettings(enabled=True),
+                ),
+            )
+            with patch("app.actions.handlers.app_control._application_exists", new_callable=AsyncMock) as exists, \
+                 patch("app.actions.handlers.app_control._open_application", new_callable=AsyncMock) as open_app:
+                exists.return_value = True
+                status, output, error = await dispatcher.dispatch(
+                    PendingClientAction(
+                        action_id="act_app_open",
+                        request_id="req",
+                        action=ClientAction(
+                            type="app.open",
+                            target="sublime_text",
+                            args={},
+                            description="Open Sublime",
+                            requires_confirm=False,
+                        ),
+                    )
+                )
+
+            self.assertEqual(status, "completed")
+            self.assertIsNone(error)
+            self.assertEqual(output["app"], "Sublime Text")
+            open_app.assert_awaited_once_with("Sublime Text")
+
+        import asyncio
+
+        asyncio.run(run())
+
+    def test_keyboard_type_v2_alias_reads_text_from_args(self) -> None:
+        async def run() -> None:
+            from app.actions.dispatcher import ActionDispatcher
+            from app.actions.models import ClientAction, PendingClientAction
+            from app.actions.setup import register_default_handlers
+            from app.config import ActionSettings, PhysicalInputSettings
+
+            dispatcher = ActionDispatcher(
+                emit=lambda envelope: _noop(),
+                enabled_types={"keyboard_type"},
+                enabled_capabilities={"keyboard.type"},
+                force_confirm_capabilities=set(),
+            )
+            register_default_handlers(
+                dispatcher,
+                ActionSettings(
+                    enabled_types=("keyboard_type",),
+                    enabled_capabilities=("keyboard.type",),
+                    force_confirm_capabilities=(),
+                    physical_input=PhysicalInputSettings(enabled=True),
+                ),
+            )
+            with patch("app.actions.handlers.physical_input._run_script", new_callable=AsyncMock) as run_script:
+                status, output, error = await dispatcher.dispatch(
+                    PendingClientAction(
+                        action_id="act_type",
+                        request_id="req",
+                        action=ClientAction(
+                            type="keyboard.type",
+                            args={"text": "안녕하세요"},
+                            description="Type Korean",
+                            requires_confirm=False,
+                        ),
+                    )
+                )
+
+            self.assertEqual(status, "completed")
+            self.assertIsNone(error)
+            self.assertEqual(output["typed_length"], 5)
+            run_script.assert_awaited_once()
+
+        import asyncio
 
         asyncio.run(run())
 

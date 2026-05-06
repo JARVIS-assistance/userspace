@@ -16,10 +16,10 @@ from app.actions.models import ClientAction
 
 
 async def clipboard(action: ClientAction) -> dict[str, Any]:
-    cmd = (action.command or "write").lower()
+    cmd = (action.command or _command_from_type(action.type) or "write").lower()
 
     if cmd == "write":
-        text = action.payload or ""
+        text = action.payload or action.target or str((action.args or {}).get("text") or "")
         await _write(text)
         return {"action": "write", "length": len(text)}
 
@@ -28,6 +28,13 @@ async def clipboard(action: ClientAction) -> dict[str, Any]:
         return {"action": "read", "text": text}
 
     raise HandlerError(f"unknown clipboard command: {action.command!r}")
+
+
+def _command_from_type(action_type: str) -> str | None:
+    return {
+        "clipboard.copy": "write",
+        "clipboard.paste": "read",
+    }.get(str(action_type).strip().lower())
 
 
 async def _write(text: str) -> None:

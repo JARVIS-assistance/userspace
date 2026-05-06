@@ -37,6 +37,17 @@ export function useActionState({ sendEvent }: Options) {
                     ...s.pendingConfirms.filter((p) => p.action_id !== item.action_id),
                     item,
                 ],
+                feed: prependCap(
+                    s.feed.filter((f) => f.action_id !== item.action_id),
+                    {
+                        action_id: item.action_id,
+                        type: String(item.action?.type || "?"),
+                        description: String(item.action?.description || ""),
+                        status: "waiting_confirmation",
+                        kind: "action",
+                        timestamp: item.timestamp,
+                    },
+                ),
             }));
             return true;
         }
@@ -48,7 +59,7 @@ export function useActionState({ sendEvent }: Options) {
                 action_id: id,
                 type: String(msg.payload.type || "?"),
                 description: String(msg.payload.description || ""),
-                status: "started",
+                status: "running",
                 kind: "action",
                 timestamp: Number(msg.payload.timestamp || Date.now()),
             };
@@ -70,7 +81,7 @@ export function useActionState({ sendEvent }: Options) {
                 action_id: id,
                 type: String(action.type || "?"),
                 description: String(action.description || ""),
-                status: "started",
+                status: "queued",
                 kind: "action",
                 timestamp: Number(msg.payload.timestamp || Date.now()),
             };
@@ -117,6 +128,51 @@ export function useActionState({ sendEvent }: Options) {
                 }
                 return next;
             });
+            return false;
+        }
+
+        if (msg.type === "conversation.action_compile_retry") {
+            const requestId = String(msg.payload.request_id || "");
+            const id = `retry_${requestId || Number(msg.payload.timestamp || Date.now())}`;
+            setState((s) => ({
+                ...s,
+                feed: prependCap(
+                    s.feed.filter((f) => f.action_id !== id),
+                    {
+                        action_id: id,
+                        type: "action_compiler",
+                        description: "Invalid assistant text action is being recompiled",
+                        status: "retrying_compile",
+                        kind: "action",
+                        error: String(msg.payload.reason || ""),
+                        output: {
+                            validation_errors: msg.payload.validation_errors || [],
+                        },
+                        timestamp: Number(msg.payload.timestamp || Date.now()),
+                    },
+                ),
+            }));
+            return false;
+        }
+
+        if (msg.type === "conversation.done" && msg.payload?.summary === "embedded assistant action suppressed") {
+            const id = `suppressed_${Number(msg.payload.timestamp || Date.now())}`;
+            setState((s) => ({
+                ...s,
+                feed: prependCap(s.feed, {
+                    action_id: id,
+                    type: "suppressed",
+                    description: "Assistant text action was suppressed",
+                    status: "suppressed",
+                    kind: "action",
+                    error: String(
+                        msg.payload.error
+                        || msg.payload.text
+                        || "assistant text is not an executable action source",
+                    ),
+                    timestamp: Number(msg.payload.timestamp || Date.now()),
+                }),
+            }));
             return false;
         }
 
@@ -172,6 +228,9 @@ function normalizeResultStatus(status: string): FeedStatus {
     if (status === "completed") return "completed";
     if (status === "rejected") return "rejected";
     if (status === "timeout") return "timeout";
+    if (status === "invalid") return "invalid";
+    if (status === "retrying_compile") return "retrying_compile";
+    if (status === "suppressed") return "suppressed";
     return "failed";
 }
 
@@ -189,7 +248,7 @@ function upsertTerminalFeed(
             description: String(payload.description || payload.action?.description || ""),
             status,
             kind: "action",
-            error: payload.error ?? null,
+            error: payload.error ?? payload.reason ?? payload.output?.reason ?? null,
             output: payload.output ?? null,
             timestamp: Number(payload.timestamp || Date.now()),
         };
@@ -199,7 +258,7 @@ function upsertTerminalFeed(
     updated[idx] = {
         ...updated[idx],
         status,
-        error: payload.error ?? updated[idx].error,
+        error: payload.error ?? payload.reason ?? payload.output?.reason ?? updated[idx].error,
         output: payload.output ?? updated[idx].output,
         timestamp: Number(payload.timestamp || Date.now()),
     };

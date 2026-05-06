@@ -69,6 +69,22 @@ async def open_in_browser(url: str, browser: str = DEFAULT_BROWSER) -> str:
     return await _open_default(url)
 
 
+async def open_browser(browser: str = DEFAULT_BROWSER) -> str:
+    """Open a browser app without navigating to a specific URL."""
+    name = _normalize(browser) or DEFAULT_BROWSER
+
+    if name in {"default", "system", ""}:
+        return await _open_default("about:blank")
+
+    if sys.platform == "darwin":
+        return await _open_macos_app_only(name)
+
+    if sys.platform.startswith("linux"):
+        return await _open_linux("about:blank", name)
+
+    return await _open_default("about:blank")
+
+
 # ── platform-specific ─────────────────────────────────
 
 
@@ -86,6 +102,25 @@ async def _open_macos(url: str, name: str) -> str:
         "-a",
         app,
         url,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"open -a {app!r} failed rc={proc.returncode}: "
+            f"{err.decode(errors='replace').strip()[:300]}"
+        )
+    await _activate_macos_app(app)
+    return app
+
+
+async def _open_macos_app_only(name: str) -> str:
+    app = _MACOS_APPS.get(name, name)
+    proc = await asyncio.create_subprocess_exec(
+        "open",
+        "-a",
+        app,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

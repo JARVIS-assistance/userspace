@@ -138,7 +138,15 @@ const STATUS_PALETTE: Record<
     FeedStatus,
     { accent: string; border: string }
 > = {
-    started: {
+    queued: {
+        accent: "rgba(170,170,170,0.85)",
+        border: "rgba(120,120,120,0.25)",
+    },
+    waiting_confirmation: {
+        accent: "rgba(230,180,90,0.9)",
+        border: "rgba(200,150,70,0.35)",
+    },
+    running: {
         accent: "rgba(150,200,230,0.85)",
         border: "rgba(100,150,200,0.25)",
     },
@@ -158,17 +166,40 @@ const STATUS_PALETTE: Record<
         accent: "rgba(210,160,80,0.85)",
         border: "rgba(180,130,60,0.35)",
     },
+    invalid: {
+        accent: "rgba(230,100,120,0.9)",
+        border: "rgba(190,70,90,0.35)",
+    },
+    retrying_compile: {
+        accent: "rgba(170,150,230,0.85)",
+        border: "rgba(130,100,200,0.3)",
+    },
+    suppressed: {
+        accent: "rgba(230,90,90,0.9)",
+        border: "rgba(190,60,60,0.4)",
+    },
 };
 
 function statusLabel(status: FeedStatus): string {
-    if (status === "started") return "RUNNING";
+    if (status === "waiting_confirmation") return "CONFIRM";
+    if (status === "running") return "RUNNING";
     return status.toUpperCase();
 }
 
 function formatDescription(entry: FeedEntry): string {
     if (entry.kind === "step") return entry.description;
-    if (entry.status !== "started") {
+    if (
+        entry.status !== "queued"
+        && entry.status !== "running"
+        && entry.status !== "waiting_confirmation"
+    ) {
         return terminalDescription(entry);
+    }
+    if (entry.status === "waiting_confirmation") {
+        return `${stripProgressSuffix(entry.description)} 확인 대기`;
+    }
+    if (entry.status === "queued") {
+        return `${stripProgressSuffix(entry.description)} 대기중`;
     }
     return `${stripProgressSuffix(entry.description)} 하는중...`;
 }
@@ -207,6 +238,9 @@ function formatError(error: string): string {
     }
     if (/timed out|timeout/i.test(error)) {
         return "결과가 제시간에 확인되지 않았습니다.";
+    }
+    if (/policy_disabled/i.test(error)) {
+        return "정책에서 비활성화된 액션입니다.";
     }
     return error;
 }

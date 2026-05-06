@@ -68,7 +68,12 @@ export default function App({ token, onLogout }: AppProps) {
     const actionState = useActionState({ sendEvent: stableSendEvent });
     const actionBusy =
         actionState.state.pendingConfirms.length > 0
-        || actionState.state.feed.some((entry) => entry.status === "started");
+        || actionState.state.feed.some((entry) =>
+            entry.status === "queued"
+            || entry.status === "waiting_confirmation"
+            || entry.status === "running"
+            || entry.status === "retrying_compile"
+        );
     const inputLocked = convBusy || actionBusy;
     const assistantTts = useAssistantTts(settingsData.tts);
 
@@ -628,6 +633,14 @@ const EXTERNAL_ACTION_TYPES = new Set([
     "file_write",
     "file_read",
     "open_url",
+    "browser",
+    "browser.open",
+    "browser.navigate",
+    "browser.search",
+    "browser.select_result",
+    "browser.extract_dom",
+    "browser.click",
+    "browser.type",
     "browser_control",
     "web_search",
     "mouse_click",
@@ -662,7 +675,7 @@ function nextActionText(type: string, command: string, error: string): string {
     if (type === "app_control" && /not found|찾을 수|없/i.test(error)) {
         return `${command} 실행에 실패했습니다. 설치되어 있지 않은 앱이면 Chrome 또는 Safari로 다시 시도하세요.`;
     }
-    if (type === "browser_control" || type === "open_url" || type === "web_search") {
+    if (type === "browser" || type === "browser_control" || type === "open_url" || type === "web_search") {
         if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
             return "Chrome 설정에서 View > Developer > Allow JavaScript from Apple Events를 켠 뒤 다시 시도하세요.";
         }

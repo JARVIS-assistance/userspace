@@ -43,7 +43,12 @@ async def _run_script(script: str) -> None:
 def make_keyboard_type(enabled: bool, max_chars: int = 4000):
     async def keyboard_type(action: ClientAction) -> dict[str, Any]:
         _require_enabled(enabled)
-        text = action.payload or action.target or ""
+        text = (
+            action.payload
+            or action.target
+            or str((action.args or {}).get("text") or "")
+            or str((action.args or {}).get("value") or "")
+        )
         if not text:
             raise HandlerError("missing keyboard text")
         if len(text) > max_chars:

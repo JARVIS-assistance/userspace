@@ -32,6 +32,9 @@ actions.
 
 ## Current Action Coverage
 
+- [x] `browser/open`
+- [x] `browser/navigate`
+- [x] `browser/search`
 - [x] `open_url`
 - [x] `app_control/open`
 - [x] `app_control/activate`
@@ -50,7 +53,7 @@ actions.
 - [x] `terminal/execute`
 - [ ] `browser_control/new_tab`
 - [ ] `browser_control/new_window`
-- [ ] `browser_control/search`
+- [x] `browser_control/search` via `browser/search`
 - [ ] `browser_control/focus_address_bar`
 - [ ] stable `mouse_click`
 - [ ] stable `mouse_drag`
@@ -59,6 +62,8 @@ actions.
 ## Safety And Sequencing
 
 - [x] Unknown action type/command is not guessed.
+- [x] Userspace does not parse natural language intent into actions.
+- [x] Capability profile is sent to Controller in headers and request body.
 - [x] Same `request_id` follow-up actions are rejected after an earlier failure.
 - [x] Input is locked while conversation/action work is busy.
 - [x] External app/browser actions can minimize userspace and bring target app forward.

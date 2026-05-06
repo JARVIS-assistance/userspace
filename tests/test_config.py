@@ -38,7 +38,11 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.stt_model_name, "base")
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].frame_ms, 8)
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].partial_interval_ms, 160)
-        self.assertEqual(settings.actions.enabled_types, ("notify", "clipboard", "open_url"))
+        self.assertEqual(
+            settings.actions.enabled_types,
+            ("notify", "clipboard", "open_url", "browser"),
+        )
+        self.assertIn("browser.search", settings.actions.enabled_capabilities)
         self.assertFalse(settings.actions.terminal.enabled)
         self.assertNotIn("keyboard_type", settings.actions.force_confirm_types)
         self.assertNotIn("hotkey", settings.actions.force_confirm_types)
@@ -74,6 +78,11 @@ class TestConfigLoading(unittest.TestCase):
         payload = {
             "actions": {
                 "enabled_types": ["notify", "clipboard", "open_url", "terminal"],
+                "enabled_capabilities": ["browser.search", "terminal.run"],
+                "browser": {
+                    "default_browser": "safari",
+                    "search_engine": "naver",
+                },
                 "file_write": {"allowed_paths": ["/tmp/jarvis"]},
                 "terminal": {
                     "enabled": True,
@@ -92,12 +101,78 @@ class TestConfigLoading(unittest.TestCase):
             settings = load_settings(str(path))
 
         self.assertIn("terminal", settings.actions.enabled_types)
+        self.assertIn("browser.search", settings.actions.enabled_capabilities)
+        self.assertEqual(settings.actions.browser.default_browser, "safari")
+        self.assertEqual(settings.actions.browser.search_engine, "naver")
         self.assertEqual(settings.actions.file_write.allowed_paths, ("/tmp/jarvis",))
         self.assertTrue(settings.actions.terminal.enabled)
         self.assertEqual(settings.actions.terminal.allowed_commands, ("pwd", "git status"))
         self.assertFalse(settings.actions.physical_input.enabled)
         self.assertTrue(settings.actions.web_search.enabled)
         self.assertTrue(settings.actions.calendar_control.enabled)
+
+    def test_capability_defaults_include_browser_foundation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            path.write_text(json.dumps({}), encoding="utf-8")
+
+            settings = load_settings(str(path))
+
+        self.assertIn("browser", settings.actions.enabled_types)
+        self.assertIn("browser.open", settings.actions.enabled_capabilities)
+        self.assertIn("browser.navigate", settings.actions.enabled_capabilities)
+        self.assertIn("browser.search", settings.actions.enabled_capabilities)
+        self.assertIn("terminal.run", settings.actions.force_confirm_capabilities)
+
+    def test_omitted_enabled_capabilities_are_derived_from_enabled_types(self) -> None:
+        payload = {
+            "actions": {
+                "enabled_types": [
+                    "open_url",
+                    "app_control",
+                    "keyboard_type",
+                    "terminal",
+                    "screenshot",
+                    "browser_control",
+                ],
+                "app_control": {"enabled": True},
+                "physical_input": {"enabled": True},
+                "terminal": {"enabled": True, "allowed_commands": ["pwd"]},
+                "screenshot": {"enabled": True},
+                "browser_control": {"enabled": True},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            settings = load_settings(str(path))
+
+        self.assertIn("app.open", settings.actions.enabled_capabilities)
+        self.assertIn("keyboard.type", settings.actions.enabled_capabilities)
+        self.assertIn("terminal.run", settings.actions.enabled_capabilities)
+        self.assertIn("screen.screenshot", settings.actions.enabled_capabilities)
+        self.assertIn("browser.extract_dom", settings.actions.enabled_capabilities)
+
+    def test_explicit_enabled_capabilities_remain_restrictive(self) -> None:
+        payload = {
+            "actions": {
+                "enabled_types": ["app_control", "keyboard_type"],
+                "enabled_capabilities": ["app.open"],
+                "app_control": {"enabled": True},
+                "physical_input": {"enabled": True},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            settings = load_settings(str(path))
+
+        self.assertEqual(settings.actions.enabled_capabilities, ("app.open",))
+        self.assertNotIn("keyboard.type", settings.actions.enabled_capabilities)
 
 
 if __name__ == "__main__":

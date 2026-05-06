@@ -51,6 +51,8 @@ class ActionDispatcher:
         confirm_timeout_sec: float = 30.0,
         enabled_types: set[str] | None = None,
         force_confirm_types: set[str] | None = None,
+        enabled_capabilities: set[str] | None = None,
+        force_confirm_capabilities: set[str] | None = None,
     ) -> None:
         self._emit = emit
         self._handlers: dict[str, Handler] = {}
@@ -58,6 +60,8 @@ class ActionDispatcher:
         self._confirm_timeout = confirm_timeout_sec
         self._enabled_types = enabled_types
         self._force_confirm_types = force_confirm_types or set()
+        self._enabled_capabilities = enabled_capabilities
+        self._force_confirm_capabilities = force_confirm_capabilities or set()
 
     # ── 핸들러 등록 ────────────────────────────────────
 
@@ -78,10 +82,14 @@ class ActionDispatcher:
         *,
         enabled_types: set[str] | None,
         force_confirm_types: set[str],
+        enabled_capabilities: set[str] | None = None,
+        force_confirm_capabilities: set[str] | None = None,
     ) -> None:
         """WS 끊김 없이 정책 업데이트."""
         self._enabled_types = enabled_types
         self._force_confirm_types = set(force_confirm_types)
+        self._enabled_capabilities = enabled_capabilities
+        self._force_confirm_capabilities = set(force_confirm_capabilities or set())
 
     # ── 컨펌 ──────────────────────────────────────────
 
@@ -120,8 +128,9 @@ class ActionDispatcher:
             },
         ))
 
-        if self._enabled_types is not None and action_type not in self._enabled_types:
-            err = f"action type disabled by policy: {action_type!r}"
+        capability = self._capability(action)
+        if not self._is_enabled(action_type, capability):
+            err = f"action disabled by policy: {capability or action_type!r}"
             await self._safe_emit(EventEnvelope(
                 type="client_action.failed",
                 payload={
@@ -130,6 +139,7 @@ class ActionDispatcher:
                     "description": action.description,
                     "action": action.model_dump(),
                     "error": err,
+                    "reason": "policy_disabled",
                     "timestamp": _now_ms(),
                 },
             ))
@@ -149,6 +159,7 @@ class ActionDispatcher:
                         "action_id": pending.action_id,
                         "type": action_type,
                         "error": err,
+                        "reason": "timeout" if decision.timed_out else "confirmation_rejected",
                         "timestamp": _now_ms(),
                     },
                 ))
@@ -166,6 +177,7 @@ class ActionDispatcher:
                     "description": action.description,
                     "action": action.model_dump(),
                     "error": err,
+                    "reason": "handler_unsupported",
                     "timestamp": _now_ms(),
                 },
             ))
@@ -186,6 +198,7 @@ class ActionDispatcher:
                     "action": action.model_dump(),
                     "output": output,
                     "error": err,
+                    "reason": output.get("reason", "execution_failed"),
                     "timestamp": _now_ms(),
                 },
             ))
@@ -201,6 +214,7 @@ class ActionDispatcher:
                     "description": action.description,
                     "action": action.model_dump(),
                     "error": err,
+                    "reason": "execution_failed",
                     "timestamp": _now_ms(),
                 },
             ))
@@ -223,7 +237,104 @@ class ActionDispatcher:
     # ── internal ──────────────────────────────────────
 
     def _requires_confirm(self, action: Any) -> bool:
-        return bool(action.requires_confirm) or str(action.type) in self._force_confirm_types
+        capability = self._capability(action)
+        return (
+            bool(action.requires_confirm)
+            or str(action.type) in self._force_confirm_types
+            or bool(capability and capability in self._force_confirm_capabilities)
+        )
+
+    def _is_enabled(self, action_type: str, capability: str | None) -> bool:
+        if self._enabled_types is None and self._enabled_capabilities is None:
+            return True
+        if capability and self._enabled_capabilities is not None:
+            return capability in self._enabled_capabilities
+        if self._enabled_types is not None and action_type in self._enabled_types:
+            return True
+        return False
+
+    def _capability(self, action: Any) -> str | None:
+        action_type = str(getattr(action, "type", ""))
+        command = str(getattr(action, "command", "") or "").strip().lower()
+        dotted_command = command.replace("_", ".")
+        if action_type.startswith("browser."):
+            return action_type
+        if action_type in {
+            "app.open",
+            "app.focus",
+            "app.close",
+            "keyboard.type",
+            "keyboard.hotkey",
+            "mouse.click",
+            "mouse.drag",
+            "screen.screenshot",
+            "clipboard.copy",
+            "clipboard.paste",
+            "terminal.run",
+            "notification.show",
+            "calendar.open",
+            "calendar.create",
+            "calendar.update",
+            "calendar.delete",
+        }:
+            return action_type
+        if action_type == "browser":
+            if dotted_command.startswith("browser."):
+                return dotted_command
+            browser_commands = {
+                "open": "browser.open",
+                "navigate": "browser.navigate",
+                "search": "browser.search",
+                "extract_dom": "browser.extract_dom",
+                "extract.dom": "browser.extract_dom",
+                "click": "browser.click",
+                "type": "browser.type",
+                "select_result": "browser.select_result",
+                "select.result": "browser.select_result",
+            }
+            if command in browser_commands:
+                return browser_commands[command]
+            if dotted_command in browser_commands:
+                return browser_commands[dotted_command]
+            return "browser.open" if not dotted_command else f"browser.{dotted_command}"
+        if action_type == "browser_control":
+            return {
+                "extract_dom": "browser.extract_dom",
+                "click_element": "browser.click",
+                "type_element": "browser.type",
+                "select_result": "browser.select_result",
+                "open": "browser.open",
+                "open_url": "browser.navigate",
+                "navigate": "browser.navigate",
+            }.get(command)
+        if action_type == "open_url":
+            args = getattr(action, "args", None)
+            if isinstance(args, dict) and isinstance(args.get("query"), str) and args["query"].strip():
+                return "browser.search"
+            return "browser.navigate"
+        if action_type == "app_control":
+            return {
+                "open": "app.open",
+                "focus": "app.focus",
+                "close": "app.close",
+            }.get(command, "app.open")
+        if action_type == "keyboard_type":
+            return "keyboard.type"
+        if action_type == "hotkey":
+            return "keyboard.hotkey"
+        if action_type == "mouse_click":
+            return "mouse.click"
+        if action_type == "mouse_drag":
+            return "mouse.drag"
+        if action_type == "terminal":
+            return "terminal.run"
+        if action_type == "file_write":
+            return "file.write"
+        if action_type == "file_read":
+            return "file.read"
+        if action_type == "screenshot":
+            return "screen.screenshot"
+        return None
 
     async def _await_confirm(self, pending: PendingClientAction) -> ConfirmDecision:
         action_id = pending.action_id

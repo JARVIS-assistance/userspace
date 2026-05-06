@@ -19,7 +19,18 @@ from app.actions.models import ClientAction
 ALLOWED_SCHEMES = ("http://", "https://")
 
 
+def make_open_url(default_browser: str = DEFAULT_BROWSER):
+    async def handler(action: ClientAction) -> dict[str, Any]:
+        return await _open_url(action, default_browser=default_browser)
+
+    return handler
+
+
 async def open_url(action: ClientAction) -> dict[str, Any]:
+    return await _open_url(action, default_browser=DEFAULT_BROWSER)
+
+
+async def _open_url(action: ClientAction, *, default_browser: str) -> dict[str, Any]:
     url = (action.target or action.payload or "").strip()
     if not url:
         raise HandlerError("missing target URL")
@@ -36,7 +47,7 @@ async def open_url(action: ClientAction) -> dict[str, Any]:
             browser = raw
 
     try:
-        used = await open_in_browser(url, browser=browser or DEFAULT_BROWSER)
+        used = await open_in_browser(url, browser=browser or default_browser)
     except RuntimeError as e:
         raise HandlerError(str(e)) from e
 

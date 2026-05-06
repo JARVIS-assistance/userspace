@@ -5,8 +5,6 @@ import time
 import uuid
 
 import httpx
-
-logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
@@ -19,6 +17,14 @@ from app.actions.registry import ActionRegistry
 from app.actions.setup import register_default_handlers
 from app.client_context import build_runtime_headers
 from app.config import load_settings, settings as _initial_settings
+from app.models.messages import EventEnvelope, StartSessionRequest
+from app.realtime.client import RealtimeChatClient
+from app.realtime.conversation import ConversationManager
+from app.realtime.ollama_client import OllamaConfig
+from app.stt.session import STTSession
+from app.stt.whisper_engine import LocalWhisperEngine
+
+logger = logging.getLogger(__name__)
 
 # 라이브에서 갱신 가능한 settings (config.json 저장 후 reload 가능).
 settings = _initial_settings
@@ -28,12 +34,7 @@ def _reload_settings_global() -> None:
     """config.json을 다시 읽어 main 모듈의 settings를 교체한다."""
     global settings
     settings = load_settings()
-from app.models.messages import EventEnvelope, StartSessionRequest
-from app.realtime.client import RealtimeChatClient
-from app.realtime.conversation import ConversationManager
-from app.realtime.ollama_client import OllamaConfig
-from app.stt.whisper_engine import LocalWhisperEngine
-from app.stt.session import STTSession
+
 
 app = FastAPI(title="JARVIS Userspace", version="0.1.0")
 actions = ActionRegistry()
@@ -145,9 +146,12 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         enabled_types=(enabled_set if settings.actions.enabled_types else None),
         # enabled 안에 들어있는 type만 force-confirm 의미가 있음.
         force_confirm_types=enabled_set & set(settings.actions.force_confirm_types),
+        enabled_capabilities=set(settings.actions.enabled_capabilities),
+        force_confirm_capabilities=set(settings.actions.force_confirm_capabilities),
     )
     register_default_handlers(dispatcher, settings.actions)
     poller = ActionPoller(api=action_api, dispatcher=dispatcher)
+    poller.start()
 
     def _now_ms() -> int:
         return int(time.time() * 1000)
@@ -234,6 +238,10 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                     enabled_types=(new_enabled if settings.actions.enabled_types else None),
                     force_confirm_types=new_enabled
                     & set(settings.actions.force_confirm_types),
+                    enabled_capabilities=set(settings.actions.enabled_capabilities),
+                    force_confirm_capabilities=set(
+                        settings.actions.force_confirm_capabilities
+                    ),
                 )
                 dispatcher.clear_handlers()
                 register_default_handlers(dispatcher, settings.actions)

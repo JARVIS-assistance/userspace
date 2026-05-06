@@ -12,9 +12,11 @@ class OllamaClientContextTests(unittest.TestCase):
                 "X-Client-Platform": "macos",
                 "X-Client-Shell": "zsh",
                 "X-Client-Browser": "chrome",
+                "X-Client-Search-Engine": "naver",
                 "X-Client-Timezone": "Asia/Seoul",
                 "X-Client-Calendar-Provider": "none",
                 "X-Client-Capabilities": "open_url,browser_control,browser_control/extract_dom",
+                "X-Client-Enabled-Capabilities": "browser.open,browser.search",
                 "X-Client-Applications": "Google Chrome,Safari",
                 "X-Client-Terminal-Enabled": "false",
                 "X-Client-Action-Contract-Version": "1.0",
@@ -23,7 +25,9 @@ class OllamaClientContextTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["browser"], "chrome")
+        self.assertEqual(payload["search_engine"], "naver")
         self.assertIn("open_url", payload["capabilities"])
+        self.assertIn("browser.search", payload["enabled_capabilities"])
         self.assertEqual(
             payload["action_contract"]["enabled_types"],
             ["open_url", "browser_control"],

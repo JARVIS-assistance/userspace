@@ -7,7 +7,7 @@ import platform
 import sys
 from pathlib import Path
 
-from app.config import ActionSettings
+from app.config import ActionSettings, SUPPORTED_ACTION_CAPABILITIES
 
 MAX_APPLICATION_HEADER_BYTES = 6000
 ACTION_CONTRACT_VERSION = "1.0"
@@ -24,13 +24,15 @@ def build_runtime_headers(actions: ActionSettings) -> dict[str, str]:
     return {
         "X-Client-Platform": _platform_name(),
         "X-Client-Shell": _shell_name(),
-        "X-Client-Browser": os.getenv("USERSPACE_BROWSER", "chrome"),
+        "X-Client-Browser": actions.browser.default_browser,
+        "X-Client-Search-Engine": actions.browser.search_engine,
         "X-Client-Timezone": os.getenv("TZ", "Asia/Seoul"),
         "X-Client-Calendar-Provider": os.getenv(
             "USERSPACE_CALENDAR_PROVIDER",
             "none",
         ),
         "X-Client-Capabilities": ",".join(_capabilities(actions)),
+        "X-Client-Enabled-Capabilities": ",".join(actions.enabled_capabilities),
         "X-Client-Action-Contract-Version": ACTION_CONTRACT_VERSION,
         "X-Client-Action-Contract": ACTION_CONTRACT,
         "X-Client-Applications": _applications_header(),
@@ -116,10 +118,18 @@ def _dedupe_names(values: list[str]) -> list[str]:
 
 
 def _capabilities(actions: ActionSettings) -> list[str]:
-    caps = list(dict.fromkeys(actions.enabled_types))
-    if "terminal" in caps:
+    caps = list(
+        dict.fromkeys(
+            [
+                *actions.enabled_types,
+                *SUPPORTED_ACTION_CAPABILITIES,
+                *actions.enabled_capabilities,
+            ]
+        )
+    )
+    if "terminal.run" in caps:
         caps.append("terminal/execute")
-    if "browser_control" in caps:
+    if "browser.extract_dom" in caps or "browser_control" in caps:
         caps.extend(
             [
                 "browser_control/select_result",
@@ -131,4 +141,4 @@ def _capabilities(actions: ActionSettings) -> list[str]:
                 "browser_control/reload",
             ]
         )
-    return caps
+    return list(dict.fromkeys(caps))
