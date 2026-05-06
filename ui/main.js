@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, globalShortcut } = require('electron');
 const path = require('path');
 
 const USERSPACE_HOST = process.env.USERSPACE_HOST || '127.0.0.1';
@@ -10,9 +10,9 @@ const SPHERE_SIZE = 100;
 const SPHERE_MARGIN = 24;
 const SPHERE_WINDOW_W = 560; // wide enough for speech bubble
 const SPHERE_WINDOW_H = 160;
-
 let mainWindow = null;
 let savedBounds = null;
+let lastSphereBounds = null; // 아이콘 모드의 마지막 위치 저장
 let isSphereMode = false;
 
 // ── Window ─────────────────────────────────────────────
@@ -35,7 +35,15 @@ function createWindow() {
 
   mainWindow = win;
 
+  // 창 이동 시 위치 저장 (아이콘 모드일 때만)
+  win.on('move', () => {
+    if (isSphereMode && mainWindow) {
+      lastSphereBounds = mainWindow.getBounds();
+    }
+  });
+
   // Pipe renderer console to terminal (safely)
+// ... (이하 동일)
   win.webContents.on('console-message', (e, level, msg, line, src) => {
     try { process.stdout.write(`[renderer] ${msg}\n`); } catch (_) {}
   });
@@ -76,12 +84,19 @@ function transitionToSphere() {
   mainWindow.setAlwaysOnTop(true, 'floating');
   mainWindow.setResizable(false);
   mainWindow.setHasShadow(false);
-  mainWindow.setBounds({
-    x: screenW - SPHERE_WINDOW_W - SPHERE_MARGIN,
-    y: SPHERE_MARGIN,
-    width: SPHERE_WINDOW_W,
-    height: SPHERE_WINDOW_H,
-  }, true);
+
+  if (lastSphereBounds) {
+    // 마지막으로 드래그해서 놓은 위치가 있으면 그 위치로 이동
+    mainWindow.setBounds(lastSphereBounds, true);
+  } else {
+    // 없으면 기본 위치(우측 상단)로 이동
+    mainWindow.setBounds({
+      x: screenW - SPHERE_WINDOW_W - SPHERE_MARGIN,
+      y: SPHERE_MARGIN,
+      width: SPHERE_WINDOW_W,
+      height: SPHERE_WINDOW_H,
+    }, true);
+  }
 
   if (process.platform === 'darwin') {
     mainWindow.setWindowButtonVisibility(false);
@@ -93,7 +108,7 @@ function transitionToSphere() {
   }, 50);
 }
 
-function restoreFromSphere() {
+function restoreFromSphere(text) {
   if (!mainWindow || !isSphereMode) return;
 
   isSphereMode = false;
@@ -110,7 +125,7 @@ function restoreFromSphere() {
 
   // Wait for window resize to settle, then tell renderer to fade in waveform
   setTimeout(() => {
-    if (mainWindow) mainWindow.webContents.send('window:restore-from-sphere');
+    if (mainWindow) mainWindow.webContents.send('window:restore-from-sphere', text);
   }, 50);
 }
 
@@ -168,6 +183,18 @@ ipcMain.on('window:set-ignore-mouse', (event, ignore) => {
   }
 });
 
+// 수동 드래그를 위한 IPC 핸들러: 렌더러에서 계산된 좌표로 창 위치 이동
+ipcMain.on('window:move', (event, { x, y, width, height }) => {
+  if (mainWindow) {
+    mainWindow.setBounds({ x, y, width, height });
+  }
+});
+
+ipcMain.handle('window:get-bounds', async () => {
+  if (mainWindow) return mainWindow.getBounds();
+  return null;
+});
+
 // ── App lifecycle ──────────────────────────────────────
 app.whenReady().then(() => {
   // Allow microphone access for STT
@@ -186,6 +213,20 @@ app.whenReady().then(() => {
     return false;
   });
 
+  // 전역 단축키 등록: Alt+Shift+P
+  // 다른 프로그램을 사용 중일 때도 해당 키를 누르면 앱이 반응합니다.
+  globalShortcut.register('Alt+Shift+P', () => {
+    if (mainWindow) {
+      if (isSphereMode) {
+        // 아이콘 모드일 경우 원래 크기로 복구하며 인사말 전달
+        restoreFromSphere('무슨 일이신가요?');
+      } else {
+        // 이미 큰 상태일 경우 아이콘 모드로 전환 (토글 기능)
+        mainWindow.webContents.send('window:minimize-to-sphere');
+      }
+    }
+  });
+
   createWindow();
 
   app.on('activate', () => {
@@ -199,4 +240,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// 앱 종료 시 모든 전역 단축키 해제 (메모리 누수 및 단축키 충돌 방지)
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });

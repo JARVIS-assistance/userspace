@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('jarvisBridge', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   closeWindow: () => ipcRenderer.send('window:close'),
   restoreWindow: () => ipcRenderer.send('window:restore'),
+  moveWindow: (bounds) => ipcRenderer.send('window:move', bounds),
+  getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
   minimizeAnimationDone: () => ipcRenderer.send('window:minimize-animation-done'),
 
   // Window state events (main → renderer)
@@ -20,7 +22,7 @@ contextBridge.exposeInMainWorld('jarvisBridge', {
     return () => ipcRenderer.removeListener('window:minimize-to-sphere', handler);
   },
   onRestoreFromSphere: (callback) => {
-    const handler = () => callback();
+    const handler = (event, text) => callback(text);
     ipcRenderer.on('window:restore-from-sphere', handler);
     return () => ipcRenderer.removeListener('window:restore-from-sphere', handler);
   },
