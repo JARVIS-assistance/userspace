@@ -11,6 +11,7 @@
 - action_dispatch → conversation.action_dispatch    (action 발행 알림)
 - action_result   → conversation.action_result      (action 결과 알림)
 - actions         → conversation.actions            (최종 집계)
+- action_intent   → conversation.action_intent      (intent 판별 결과)
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ _PASSTHROUGH_EVENTS: dict[str, str] = {
     "action_dispatch": "conversation.action_dispatch",
     "action_result": "conversation.action_result",
     "actions": "conversation.actions",
+    "action_intent": "conversation.action_intent",
 }
 
 

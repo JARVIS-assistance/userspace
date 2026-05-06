@@ -32,6 +32,7 @@ EventType = Literal[
     "conversation.error",
     "conversation.reset",
     # Conversation action events (SSE pass-through, UI display only)
+    "conversation.action_intent",
     "conversation.action_dispatch",
     "conversation.action_result",
     "conversation.actions",

@@ -230,6 +230,7 @@ class ConversationManager:
                     "conversation.thinking",
                     "conversation.plan_step",
                     "conversation.error",
+                    "conversation.action_intent",
                     "conversation.action_dispatch",
                     "conversation.action_result",
                     "conversation.actions",

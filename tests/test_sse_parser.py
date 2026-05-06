@@ -75,6 +75,27 @@ class SSEParserTests(unittest.TestCase):
             "conversation.action_dispatch",
         ])
 
+    def test_passes_action_intent_events(self) -> None:
+        async def run():
+            response = _FakeResponse(
+                [
+                    b"event: action_intent\n",
+                    b'data: {"should_act": false, "execution_mode": "no_action"}\n',
+                    b"\n",
+                ]
+            )
+            return [
+                event
+                async for event in parse_conversation_stream(
+                    response, is_cancelled=lambda: False
+                )
+            ]
+
+        events = asyncio.run(run())
+
+        self.assertEqual(events[0].type, "conversation.action_intent")
+        self.assertFalse(events[0].payload["should_act"])
+
 
 if __name__ == "__main__":
     unittest.main()
