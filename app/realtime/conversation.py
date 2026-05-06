@@ -257,8 +257,15 @@ class ConversationManager:
 
                 if event.type == "conversation.done":
                     final_done_payload = dict(event.payload)
-                    done_text = str(final_done_payload.get("text", "")).strip()
+                    done_text = str(final_done_payload.get("text", ""))
                     if done_text and not self._current_response.strip():
+                        self._current_response = done_text
+                    elif (
+                        done_text
+                        and self._current_response
+                        and done_text.endswith(self._current_response)
+                        and len(done_text) > len(self._current_response)
+                    ):
                         self._current_response = done_text
                     break
         
