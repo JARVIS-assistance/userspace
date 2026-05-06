@@ -33,6 +33,21 @@ class FakeDispatcher:
         return "completed", {"ok": True}, None
 
 
+
+
+class BlockingDispatcher(FakeDispatcher):
+    def __init__(self, *, started, release) -> None:
+        super().__init__()
+        self.started = started
+        self.release = release
+
+    async def dispatch(self, pending: PendingClientAction):
+        self.dispatched.append(pending.action_id)
+        self.started.set()
+        await self.release.wait()
+        return "completed", {"ok": True}, None
+
+
 class PollerTests(unittest.TestCase):
     def test_followup_action_is_rejected_after_request_failure(self) -> None:
         async def run() -> None:
@@ -50,6 +65,36 @@ class PollerTests(unittest.TestCase):
             self.assertEqual(api.results[0][1], "failed")
             self.assertEqual(api.results[1][1], "rejected")
             self.assertIn("previous action in request failed", api.results[1][3] or "")
+
+        import asyncio
+
+        asyncio.run(run())
+
+    def test_dispatch_pending_returns_before_action_finishes(self) -> None:
+        async def run() -> None:
+            import asyncio
+
+            api = FakeAPI()
+            started = asyncio.Event()
+            release = asyncio.Event()
+            dispatcher = BlockingDispatcher(started=started, release=release)
+            poller = ActionPoller(api=api, dispatcher=dispatcher)  # type: ignore[arg-type]
+
+            pending = _pending("act_slow", "req_2", "keyboard_type")
+
+            self.assertTrue(poller.dispatch_pending(pending))
+            self.assertFalse(poller.dispatch_pending(pending))
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+
+            self.assertEqual(api.results, [])
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(*poller._inflight, return_exceptions=True),
+                timeout=1.0,
+            )
+
+            self.assertEqual(dispatcher.dispatched, ["act_slow"])
+            self.assertEqual(api.results, [("act_slow", "completed", {"ok": True}, None)])
 
         import asyncio
 

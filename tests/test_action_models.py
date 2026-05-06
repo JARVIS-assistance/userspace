@@ -66,7 +66,7 @@ class ActionModelTests(unittest.TestCase):
 
 
 class DirectV2ActionDispatchTests(unittest.TestCase):
-    def test_app_open_v2_alias_dispatches_to_app_control_handler(self) -> None:
+    def test_app_open_v2_dispatch_preserves_model_target_without_local_alias_mapping(self) -> None:
         async def run() -> None:
             from app.actions.dispatcher import ActionDispatcher
             from app.actions.models import ClientAction, PendingClientAction
@@ -105,8 +105,8 @@ class DirectV2ActionDispatchTests(unittest.TestCase):
 
             self.assertEqual(status, "completed")
             self.assertIsNone(error)
-            self.assertEqual(output["app"], "Sublime Text")
-            open_app.assert_awaited_once_with("Sublime Text")
+            self.assertEqual(output["app"], "sublime_text")
+            open_app.assert_awaited_once_with("sublime_text")
 
         import asyncio
 

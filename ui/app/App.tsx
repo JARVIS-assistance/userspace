@@ -75,6 +75,7 @@ export default function App({ token, onLogout }: AppProps) {
             || entry.status === "retrying_compile"
         );
     const inputLocked = convBusy || actionBusy;
+    const micLocked = actionBusy;
     const assistantTts = useAssistantTts(settingsData.tts);
 
     // ── TTS events ───────────────────────────────────────
@@ -348,12 +349,6 @@ export default function App({ token, onLogout }: AppProps) {
         else setSttState("idle");
     }, [mic.active]);
 
-    useEffect(() => {
-        if (inputLocked && mic.active) {
-            mic.stop();
-        }
-    }, [inputLocked, mic.active, mic.stop]);
-
     const handleChatSubmit = useCallback(() => {
         if (inputLocked) return;
         const text = chatInput.trim();
@@ -383,7 +378,7 @@ export default function App({ token, onLogout }: AppProps) {
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.key === "p" && e.ctrlKey) {
                 e.preventDefault();
-                if (inputLocked) return;
+                if (micLocked) return;
                 mic.toggle();
             }
             if (e.key === "Enter" && !chatOpen && !e.ctrlKey && !e.metaKey) {
@@ -412,7 +407,7 @@ export default function App({ token, onLogout }: AppProps) {
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [mic, chatOpen, convBusy, handleStop, inputLocked, viewMode]);
+    }, [mic, chatOpen, convBusy, handleStop, inputLocked, micLocked, viewMode]);
 
     // ── Window controls ──────────────────────────────────
     const handleMinimizeDone = useCallback(() => {

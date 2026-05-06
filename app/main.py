@@ -176,7 +176,10 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                     poller.wake()
                 else:
                     await emit_conversation(ce)
-                    await poller.dispatch_pending_now(pending)
+                    # Do not block the conversation/SSE forwarding path while the
+                    # local action executes and posts its result. The poller owns
+                    # duplicate suppression and runs the dispatch in the background.
+                    poller.dispatch_pending(pending)
                 continue
 
             await emit_conversation(ce)
