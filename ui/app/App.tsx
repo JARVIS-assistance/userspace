@@ -66,6 +66,10 @@ export default function App({ token, onLogout }: AppProps) {
         [],
     );
     const actionState = useActionState({ sendEvent: stableSendEvent });
+    const actionBusy =
+        actionState.state.pendingConfirms.length > 0
+        || actionState.state.feed.some((entry) => entry.status === "started");
+    const inputLocked = convBusy || actionBusy;
     const assistantTts = useAssistantTts(settingsData.tts);
 
     // ── TTS events ───────────────────────────────────────
@@ -339,7 +343,14 @@ export default function App({ token, onLogout }: AppProps) {
         else setSttState("idle");
     }, [mic.active]);
 
+    useEffect(() => {
+        if (inputLocked && mic.active) {
+            mic.stop();
+        }
+    }, [inputLocked, mic.active, mic.stop]);
+
     const handleChatSubmit = useCallback(() => {
+        if (inputLocked) return;
         const text = chatInput.trim();
         if (!text) return;
         setUserSubtitle(text);
@@ -350,7 +361,7 @@ export default function App({ token, onLogout }: AppProps) {
         setAssistantSubtitleDim(false);
         sendEvent("chat.request", { text });
         setChatInput("");
-    }, [chatInput, sendEvent]);
+    }, [chatInput, inputLocked, sendEvent]);
 
     const handleStop = useCallback(() => {
         if (!convBusy) return;
@@ -367,12 +378,14 @@ export default function App({ token, onLogout }: AppProps) {
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.key === "p" && e.ctrlKey) {
                 e.preventDefault();
+                if (inputLocked) return;
                 mic.toggle();
             }
             if (e.key === "Enter" && !chatOpen && !e.ctrlKey && !e.metaKey) {
                 const tag = (e.target as HTMLElement)?.tagName;
                 if (tag === "INPUT" || tag === "TEXTAREA") return;
                 e.preventDefault();
+                if (inputLocked) return;
                 if (viewMode === "sphere" || viewMode === "minimizing") {
                     setChatAnchor(pointerRef.current);
                 }
@@ -394,7 +407,7 @@ export default function App({ token, onLogout }: AppProps) {
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [mic, chatOpen, convBusy, handleStop, viewMode]);
+    }, [mic, chatOpen, convBusy, handleStop, inputLocked, viewMode]);
 
     // ── Window controls ──────────────────────────────────
     const handleMinimizeDone = useCallback(() => {
@@ -526,6 +539,7 @@ export default function App({ token, onLogout }: AppProps) {
                     chatOpen={chatOpen}
                     chatInput={chatInput}
                     stopVisible={convBusy}
+                    inputDisabled={inputLocked}
                     onChatInputChange={setChatInput}
                     onChatSubmit={handleChatSubmit}
                     onStop={handleStop}
@@ -539,6 +553,7 @@ export default function App({ token, onLogout }: AppProps) {
                     y={chatAnchor.y}
                     value={chatInput}
                     stopVisible={convBusy}
+                    inputDisabled={inputLocked}
                     onChange={setChatInput}
                     onSubmit={handleChatSubmit}
                     onStop={handleStop}
@@ -640,6 +655,9 @@ function nextActionText(type: string, command: string, error: string): string {
             return `${command} 실행 결과가 제시간에 확인되지 않았습니다. 앱이 설치되어 있지 않다면 Chrome 또는 Safari로 다시 시도하세요.`;
         }
         return `외부 작업 결과가 제시간에 확인되지 않았습니다. 같은 작업을 다시 시도하거나 다른 방법을 선택하세요.`;
+    }
+    if (type === "app_control" && /invalid app_control target:\s*browser/i.test(error)) {
+        return "백엔드가 브라우저를 추상 앱 이름으로 보냈습니다. URL 열기는 open_url로, 앱 실행은 Chrome/Safari 같은 실제 앱 이름으로 보내야 합니다.";
     }
     if (type === "app_control" && /not found|찾을 수|없/i.test(error)) {
         return `${command} 실행에 실패했습니다. 설치되어 있지 않은 앱이면 Chrome 또는 Safari로 다시 시도하세요.`;

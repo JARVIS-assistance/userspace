@@ -180,7 +180,10 @@ class OllamaClient:
         self.reset_cancellation()
         session = await self._get_session()
 
-        payload = {"message": prompt}
+        payload = {
+            "message": prompt,
+            "client_context": _client_context_payload(self.config.runtime_headers),
+        }
 
         headers = self._auth_headers()
         headers["Accept"] = "text/event-stream"
@@ -258,6 +261,38 @@ class OllamaClient:
             if chunk.is_done:
                 break
         return full_text.strip()
+
+
+def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
+    """Mirror action context in the JSON body for controllers that ignore headers."""
+    capabilities = _split_header_list(runtime_headers.get("X-Client-Capabilities", ""))
+    return {
+        "platform": runtime_headers.get("X-Client-Platform", ""),
+        "shell": runtime_headers.get("X-Client-Shell", ""),
+        "browser": runtime_headers.get("X-Client-Browser", ""),
+        "timezone": runtime_headers.get("X-Client-Timezone", ""),
+        "calendar_provider": runtime_headers.get("X-Client-Calendar-Provider", ""),
+        "capabilities": capabilities,
+        "applications": _split_header_list(runtime_headers.get("X-Client-Applications", "")),
+        "terminal": {
+            "enabled": runtime_headers.get("X-Client-Terminal-Enabled") == "true",
+            "allowed_commands": _split_header_list(
+                runtime_headers.get("X-Client-Terminal-Allowed-Commands", "")
+            ),
+            "cwd_allowlist": _split_header_list(
+                runtime_headers.get("X-Client-Terminal-Cwd-Allowlist", "")
+            ),
+        },
+        "action_contract": {
+            "version": runtime_headers.get("X-Client-Action-Contract-Version", "1.0"),
+            "instruction": runtime_headers.get("X-Client-Action-Contract", ""),
+            "enabled_types": [item for item in capabilities if "/" not in item],
+        },
+    }
+
+
+def _split_header_list(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 _default_client: OllamaClient | None = None

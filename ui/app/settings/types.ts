@@ -21,7 +21,7 @@ export interface Persona {
 
 export interface TtsConfig {
     enabled: boolean;
-    provider: "browser" | "chatterbox" | "elevenlabs" | "openai";
+    provider: "browser" | "chatterbox" | "vibevoice" | "elevenlabs" | "openai";
     voiceURI: string;
     apiKey: string;
     voiceId: string;
@@ -62,11 +62,11 @@ export const DEFAULT_PERSONA: Persona = {
 
 export const DEFAULT_TTS: TtsConfig = {
     enabled: false,
-    provider: "chatterbox",
+    provider: "vibevoice",
     voiceURI: "",
     apiKey: "",
-    voiceId: "",
-    model: "multilingual",
+    voiceId: "Carter",
+    model: "microsoft/VibeVoice-Realtime-0.5B",
     language: "ko",
     audioPromptPath: "",
     exaggeration: 0.5,

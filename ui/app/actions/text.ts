@@ -27,7 +27,28 @@ export function displayDoneText(payload: Record<string, any>): string {
     if (summary && summary !== "direct client action dispatched") {
         return summary;
     }
-    return cleanAssistantText(String(payload.text || ""));
+    const rawText = String(payload.text || "");
+    const providerError = displayProviderError(rawText);
+    if (providerError) return providerError;
+    if (looksLikeDisplayOnlyAction(rawText) && !payload.has_actions) {
+        return "실행할 액션이 백엔드 큐로 전달되지 않았습니다.";
+    }
+    const cleaned = cleanAssistantText(rawText);
+    if (!cleaned && looksLikeDisplayOnlyAction(rawText)) {
+        return "실행할 액션이 백엔드 큐로 전달되지 않았습니다.";
+    }
+    return cleaned;
+}
+
+function displayProviderError(value: string): string {
+    const match = value.trim().match(/^\[provider-error\]\s*(HTTP\s+\d+)/i);
+    if (!match) return "";
+    return `백엔드 provider 요청이 실패했습니다. ${match[1]}`;
+}
+
+function looksLikeDisplayOnlyAction(value: string): boolean {
+    if (!/```(?:json|actions)?/i.test(value)) return false;
+    return /"type"\s*:|"command"\s*:|"target"\s*:/i.test(value);
 }
 
 function displayActionResults(payload: Record<string, any>): string {
@@ -109,6 +130,9 @@ function firstLine(value: unknown): string {
 }
 
 function formatActionError(error: string): string {
+    if (/invalid app_control target:\s*browser/i.test(error)) {
+        return "백엔드가 브라우저를 추상 앱 이름으로 보냈습니다. URL 열기는 open_url로, 앱 실행은 Chrome/Safari 같은 실제 앱 이름으로 보내야 합니다.";
+    }
     if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
         return "Chrome에서 보기 > 개발자 > Apple Events의 JavaScript 허용을 켠 뒤 다시 시도하세요.";
     }

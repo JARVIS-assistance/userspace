@@ -25,6 +25,7 @@ ClientActionType = Literal[
     "open_url",
     "browser_control",
     "web_search",
+    "calendar_control",
     "notify",
     "clipboard",
     # 물리 (입력 합성)

@@ -22,8 +22,6 @@ DEFAULT_FORCE_CONFIRM_TYPES = (
     "file_write",
     "mouse_click",
     "mouse_drag",
-    "keyboard_type",
-    "hotkey",
 )
 # 안전 상한들
 DEFAULT_FILE_WRITE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -139,6 +137,7 @@ class ActionSettings:
     app_control: ToggleSettings = ToggleSettings()
     browser_control: ToggleSettings = ToggleSettings()
     web_search: ToggleSettings = ToggleSettings()
+    calendar_control: ToggleSettings = ToggleSettings()
     screenshot: ScreenshotSettings = ScreenshotSettings()
 
     @classmethod
@@ -189,6 +188,7 @@ class ActionSettings:
             app_control=_toggle("app_control"),
             browser_control=_toggle("browser_control"),
             web_search=_toggle("web_search"),
+            calendar_control=_toggle("calendar_control"),
             screenshot=ScreenshotSettings(
                 enabled=bool(screenshot.get("enabled", False)),
                 allowed_paths=_string_tuple(screenshot.get("allowed_paths"), ()),

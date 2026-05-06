@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.actions.dispatcher import ActionDispatcher
 from app.actions.handlers.app_control import make_app_control
 from app.actions.handlers.browser_control import make_browser_control
+from app.actions.handlers.calendar_control import make_calendar_control
 from app.actions.handlers.clipboard import clipboard
 from app.actions.handlers.file_ops import make_file_read, make_file_write
 from app.actions.handlers.notify import notify
@@ -50,6 +51,10 @@ def register_default_handlers(
     dispatcher.register("app_control", make_app_control(settings.app_control.enabled))
     dispatcher.register("browser_control", make_browser_control(settings.browser_control.enabled))
     dispatcher.register("web_search", make_web_search(settings.web_search.enabled))
+    dispatcher.register(
+        "calendar_control",
+        make_calendar_control(settings.calendar_control.enabled),
+    )
     dispatcher.register(
         "screenshot",
         make_screenshot(

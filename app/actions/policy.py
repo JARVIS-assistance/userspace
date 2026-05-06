@@ -20,6 +20,7 @@ ALL_ACTION_TYPES: tuple[str, ...] = (
     "browser_control",
     "app_control",
     "web_search",
+    "calendar_control",
     "file_read",
     "file_write",
     "terminal",
@@ -37,6 +38,7 @@ _LINKED_FLAGS: dict[str, str] = {
     "app_control": "app_control",
     "browser_control": "browser_control",
     "web_search": "web_search",
+    "calendar_control": "calendar_control",
     "screenshot": "screenshot",
     "mouse_click": "physical_input",
     "mouse_drag": "physical_input",
@@ -67,6 +69,7 @@ def actions_to_dict(actions: ActionSettings) -> dict[str, Any]:
         "app_control": {"enabled": actions.app_control.enabled},
         "browser_control": {"enabled": actions.browser_control.enabled},
         "web_search": {"enabled": actions.web_search.enabled},
+        "calendar_control": {"enabled": actions.calendar_control.enabled},
         "screenshot": {
             "enabled": actions.screenshot.enabled,
             "allowed_paths": list(actions.screenshot.allowed_paths),
@@ -90,7 +93,7 @@ def _validate_patch(patch: dict[str, Any]) -> None:
     for key in ("file_write", "terminal", "physical_input", "screenshot"):
         if key in patch and not isinstance(patch[key], dict):
             raise ValueError(f"{key} must be an object")
-    for key in ("app_control", "browser_control", "web_search"):
+    for key in ("app_control", "browser_control", "web_search", "calendar_control"):
         if key in patch and not isinstance(patch[key], dict):
             raise ValueError(f"{key} must be an object")
 
@@ -133,6 +136,7 @@ def _merge_into_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[
         "app_control",
         "browser_control",
         "web_search",
+        "calendar_control",
         "screenshot",
     ):
         if key in patch:

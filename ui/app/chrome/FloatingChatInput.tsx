@@ -5,6 +5,7 @@ interface Props {
     y: number;
     value: string;
     stopVisible: boolean;
+    inputDisabled: boolean;
     onChange: (value: string) => void;
     onSubmit: () => void;
     onStop: () => void;
@@ -12,7 +13,7 @@ interface Props {
 
 const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
     function FloatingChatInput(
-        { x, y, value, stopVisible, onChange, onSubmit, onStop },
+        { x, y, value, stopVisible, inputDisabled, onChange, onSubmit, onStop },
         ref,
     ) {
         const width = 360;
@@ -37,15 +38,17 @@ const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
                     ref={ref}
                     type="text"
                     value={value}
+                    disabled={inputDisabled}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={(e) => {
+                        if (inputDisabled) return;
                         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                         if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
                             onSubmit();
                         }
                     }}
-                    placeholder="메시지를 입력하세요..."
+                    placeholder={inputDisabled ? "작업 처리 중..." : "메시지를 입력하세요..."}
                     style={{
                         flex: 1,
                         minWidth: 0,
@@ -57,6 +60,8 @@ const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
                         fontSize: 13,
                         outline: "none",
                         backdropFilter: "blur(10px)",
+                        opacity: inputDisabled ? 0.55 : 1,
+                        cursor: inputDisabled ? "not-allowed" : "text",
                     }}
                 />
                 {stopVisible && (
@@ -77,15 +82,20 @@ const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
                     </button>
                 )}
                 <button
+                    disabled={inputDisabled}
                     onClick={onSubmit}
                     style={{
                         padding: "10px 16px",
-                        background: "rgba(120,80,30,0.55)",
+                        background: inputDisabled
+                            ? "rgba(70,60,50,0.45)"
+                            : "rgba(120,80,30,0.55)",
                         border: "1px solid rgba(120,80,30,0.45)",
                         borderRadius: 8,
-                        color: "rgba(210,180,140,0.95)",
+                        color: inputDisabled
+                            ? "rgba(150,130,105,0.6)"
+                            : "rgba(210,180,140,0.95)",
                         fontSize: 13,
-                        cursor: "pointer",
+                        cursor: inputDisabled ? "not-allowed" : "pointer",
                     }}
                 >
                     ↵

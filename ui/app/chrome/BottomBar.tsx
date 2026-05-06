@@ -7,6 +7,7 @@ interface Props {
     chatOpen: boolean;
     chatInput: string;
     stopVisible: boolean;
+    inputDisabled: boolean;
     onChatInputChange: (v: string) => void;
     onChatSubmit: () => void;
     onStop: () => void;
@@ -15,10 +16,11 @@ interface Props {
 const ChatInput = forwardRef<HTMLInputElement, {
     value: string;
     stopVisible: boolean;
+    disabled: boolean;
     onChange: (v: string) => void;
     onSubmit: () => void;
     onStop: () => void;
-}>(function ChatInput({ value, stopVisible, onChange, onSubmit, onStop }, ref) {
+}>(function ChatInput({ value, stopVisible, disabled, onChange, onSubmit, onStop }, ref) {
     return (
         <div
             style={{
@@ -32,8 +34,10 @@ const ChatInput = forwardRef<HTMLInputElement, {
                 ref={ref}
                 type="text"
                 value={value}
+                disabled={disabled}
                 onChange={(e) => onChange(e.target.value)}
                 onKeyDown={(e) => {
+                    if (disabled) return;
                     // 한글 IME composition 중의 Enter는 무시
                     // (마지막 음절이 다음 frame에 다시 submit되는 버그 방지)
                     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -42,7 +46,7 @@ const ChatInput = forwardRef<HTMLInputElement, {
                         onSubmit();
                     }
                 }}
-                placeholder="메시지를 입력하세요..."
+                placeholder={disabled ? "작업 처리 중..." : "메시지를 입력하세요..."}
                 style={{
                     flex: 1,
                     padding: "10px 16px",
@@ -53,6 +57,8 @@ const ChatInput = forwardRef<HTMLInputElement, {
                     fontSize: 14,
                     outline: "none",
                     backdropFilter: "blur(8px)",
+                    opacity: disabled ? 0.55 : 1,
+                    cursor: disabled ? "not-allowed" : "text",
                 }}
             />
             {stopVisible && (
@@ -73,15 +79,20 @@ const ChatInput = forwardRef<HTMLInputElement, {
                 </button>
             )}
             <button
+                disabled={disabled}
                 onClick={onSubmit}
                 style={{
                     padding: "10px 20px",
-                    background: "rgba(120,80,30,0.4)",
+                    background: disabled
+                        ? "rgba(70,60,50,0.35)"
+                        : "rgba(120,80,30,0.4)",
                     border: "1px solid rgba(120,80,30,0.3)",
                     borderRadius: 8,
-                    color: "rgba(210,180,140,0.9)",
+                    color: disabled
+                        ? "rgba(150,130,105,0.55)"
+                        : "rgba(210,180,140,0.9)",
                     fontSize: 14,
-                    cursor: "pointer",
+                    cursor: disabled ? "not-allowed" : "pointer",
                 }}
             >
                 ↵
@@ -98,6 +109,7 @@ const BottomBar = forwardRef<HTMLInputElement, Props>(function BottomBar(
         chatOpen,
         chatInput,
         stopVisible,
+        inputDisabled,
         onChatInputChange,
         onChatSubmit,
         onStop,
@@ -154,6 +166,7 @@ const BottomBar = forwardRef<HTMLInputElement, Props>(function BottomBar(
                     ref={chatInputRef}
                     value={chatInput}
                     stopVisible={stopVisible}
+                    disabled={inputDisabled}
                     onChange={onChatInputChange}
                     onSubmit={onChatSubmit}
                     onStop={onStop}

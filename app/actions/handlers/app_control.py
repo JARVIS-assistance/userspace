@@ -21,8 +21,16 @@ APP_ALIASES = {
     "mozilla firefox": "Firefox",
     "safari": "Safari",
     "sublime-text": "Sublime Text",
+    "sublime_text": "Sublime Text",
     "sublime text": "Sublime Text",
+    "sublimetext": "Sublime Text",
     "sublime": "Sublime Text",
+}
+
+ABSTRACT_APP_TARGETS = {
+    "browser",
+    "default_browser",
+    "web_browser",
 }
 
 
@@ -31,10 +39,15 @@ def make_app_control(enabled: bool):
         if not enabled:
             raise HandlerError("app_control disabled by policy")
         command, app_name = _normalize_command_and_app(action)
-        if command not in {"open", "activate", "quit", "close"}:
+        if command not in {"open", "activate", "quit", "close", "new_file", "new_tab"}:
             raise HandlerError(f"unsupported app_control command: {command!r}")
         if not app_name:
             raise HandlerError("missing target app")
+        if app_name.strip().lower() in ABSTRACT_APP_TARGETS:
+            raise HandlerError(
+                "invalid app_control target: browser. "
+                "Use open_url for browser URLs, or app_control/open with a concrete app target like Chrome/Safari."
+            )
 
         if sys.platform != "darwin":
             raise HandlerError(f"app_control not supported on {sys.platform}")
@@ -43,9 +56,14 @@ def make_app_control(enabled: bool):
             exists = await _application_exists(app_name)
             if not exists:
                 raise HandlerError(
-                    f"application not found: {app_name}. Install it or choose Chrome/Safari."
+                    f"application not found: {app_name}. Install it or use the exact macOS app name."
                 )
             await _open_application(app_name)
+            return {"app": app_name, "command": command}
+
+        if command in {"new_file", "new_tab"}:
+            await _activate_application(app_name)
+            await _send_new_file_hotkey()
             return {"app": app_name, "command": command}
 
         escaped = _escape_applescript(app_name)
@@ -126,3 +144,18 @@ async def _activate_application(app_name: str) -> None:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
+
+
+async def _send_new_file_hotkey() -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "osascript",
+        "-e",
+        'tell application "System Events" to keystroke "n" using {command down}',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise HandlerError(
+            f"app_control new_file failed rc={proc.returncode}: {err.decode(errors='replace')[:300]}"
+        )

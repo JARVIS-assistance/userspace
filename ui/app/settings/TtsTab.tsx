@@ -71,6 +71,7 @@ export default function TtsTab({ config, onChange }: Props) {
                 >
                     <option value="browser">Browser / System TTS</option>
                     <option value="chatterbox">Chatterbox-TTS Local</option>
+                    <option value="vibevoice">VibeVoice Realtime Local</option>
                     <option value="elevenlabs">ElevenLabs</option>
                     <option value="openai">OpenAI</option>
                 </select>
@@ -95,6 +96,8 @@ export default function TtsTab({ config, onChange }: Props) {
                 </div>
             ) : config.provider === "chatterbox" ? (
                 <ChatterboxFields config={config} onChange={onChange} />
+            ) : config.provider === "vibevoice" ? (
+                <VibeVoiceFields config={config} onChange={onChange} />
             ) : (
                 <CommercialFields config={config} onChange={onChange} />
             )}
@@ -196,6 +199,56 @@ function ChatterboxFields({
     );
 }
 
+function VibeVoiceFields({
+    config,
+    onChange,
+}: {
+    config: TtsConfig;
+    onChange: (patch: Partial<TtsConfig>) => void;
+}) {
+    return (
+        <>
+            <div style={css.row}>
+                <div style={css.half}>
+                    <label style={css.label}>MODEL</label>
+                    <input
+                        style={css.input}
+                        value={config.model}
+                        onChange={(e) => onChange({ model: e.target.value })}
+                        placeholder="microsoft/VibeVoice-Realtime-0.5B"
+                    />
+                </div>
+                <div style={css.half}>
+                    <label style={css.label}>VOICE</label>
+                    <input
+                        style={css.input}
+                        value={config.voiceId}
+                        onChange={(e) => onChange({ voiceId: e.target.value })}
+                        placeholder="Carter"
+                    />
+                </div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+                <label style={css.label}>VOICE PRESET PATH</label>
+                <input
+                    style={css.input}
+                    value={config.audioPromptPath}
+                    onChange={(e) => onChange({ audioPromptPath: e.target.value })}
+                    placeholder="/absolute/path/to/voice.pt"
+                />
+            </div>
+            <RangeField
+                label="CFG SCALE"
+                value={config.cfgWeight}
+                min={0.5}
+                max={3}
+                step={0.1}
+                onChange={(cfgWeight) => onChange({ cfgWeight })}
+            />
+        </>
+    );
+}
+
 function CommercialFields({
     config,
     onChange,
@@ -247,12 +300,14 @@ function defaultModel(provider: TtsConfig["provider"]): string {
     if (provider === "openai") return "gpt-4o-mini-tts";
     if (provider === "elevenlabs") return "eleven_multilingual_v2";
     if (provider === "chatterbox") return "multilingual";
+    if (provider === "vibevoice") return "microsoft/VibeVoice-Realtime-0.5B";
     return "";
 }
 
 function defaultVoice(provider: TtsConfig["provider"]): string {
     if (provider === "openai") return "marin";
     if (provider === "elevenlabs") return "JBFqnCBsd6RMkjVDRZzb";
+    if (provider === "vibevoice") return "Carter";
     return "";
 }
 

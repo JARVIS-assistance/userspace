@@ -40,6 +40,8 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].partial_interval_ms, 160)
         self.assertEqual(settings.actions.enabled_types, ("notify", "clipboard", "open_url"))
         self.assertFalse(settings.actions.terminal.enabled)
+        self.assertNotIn("keyboard_type", settings.actions.force_confirm_types)
+        self.assertNotIn("hotkey", settings.actions.force_confirm_types)
 
     def test_env_overrides_api_base_urls(self) -> None:
         payload = {
@@ -79,6 +81,7 @@ class TestConfigLoading(unittest.TestCase):
                 },
                 "physical_input": {"enabled": False},
                 "web_search": {"enabled": True},
+                "calendar_control": {"enabled": True},
             }
         }
 
@@ -94,6 +97,7 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.actions.terminal.allowed_commands, ("pwd", "git status"))
         self.assertFalse(settings.actions.physical_input.enabled)
         self.assertTrue(settings.actions.web_search.enabled)
+        self.assertTrue(settings.actions.calendar_control.enabled)
 
 
 if __name__ == "__main__":

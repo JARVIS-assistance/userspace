@@ -165,7 +165,7 @@ ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
   const model = String(payload.model || '').trim();
 
   if (!text) return { ok: false, error: 'missing text' };
-  if (provider !== 'chatterbox' && !apiKey) return { ok: false, error: 'missing api key' };
+  if (!['chatterbox', 'vibevoice'].includes(provider) && !apiKey) return { ok: false, error: 'missing api key' };
 
   try {
     let res;
@@ -177,6 +177,14 @@ ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
         audioPromptPath: String(payload.audioPromptPath || '').trim(),
         exaggeration: Number(payload.exaggeration ?? 0.5),
         cfgWeight: Number(payload.cfgWeight ?? 0.5),
+      });
+    } else if (provider === 'vibevoice') {
+      return await synthesizeVibeVoice({
+        text,
+        model: model || 'microsoft/VibeVoice-Realtime-0.5B',
+        voiceId: voiceId || 'Carter',
+        voicePresetPath: String(payload.audioPromptPath || '').trim(),
+        cfgScale: Number(payload.cfgWeight ?? 1.5),
       });
     } else if (provider === 'elevenlabs') {
       const voice = voiceId || 'JBFqnCBsd6RMkjVDRZzb';
@@ -235,6 +243,56 @@ ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
     return { ok: false, error: String(error) };
   }
 });
+
+function synthesizeVibeVoice(options) {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, '..', 'scripts', 'vibevoice_realtime_tts.py');
+    const outputPath = path.join(os.tmpdir(), `jarvis-vibevoice-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
+    const cacheRoot = path.join(__dirname, '..', '.cache');
+    const python = process.env.VIBEVOICE_PYTHON || process.env.PYTHON || 'python3';
+    const child = spawn(python, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        HF_HOME: process.env.HF_HOME || path.join(cacheRoot, 'huggingface'),
+        TORCH_HOME: process.env.TORCH_HOME || path.join(cacheRoot, 'torch'),
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      resolve({ ok: false, error: String(error) });
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({
+          ok: false,
+          error: stderr.trim() || stdout.trim() || `VibeVoice exited with ${code}`,
+        });
+        return;
+      }
+      try {
+        const bytes = fs.readFileSync(outputPath);
+        fs.unlink(outputPath, () => {});
+        resolve({
+          ok: true,
+          mimeType: 'audio/wav',
+          audioBase64: bytes.toString('base64'),
+        });
+      } catch (error) {
+        resolve({
+          ok: false,
+          error: `${String(error)} ${stderr.trim()}`.trim(),
+        });
+      }
+    });
+    child.stdin.end(JSON.stringify({ ...options, outputPath }));
+  });
+}
 
 function synthesizeChatterbox(options) {
   return new Promise((resolve) => {

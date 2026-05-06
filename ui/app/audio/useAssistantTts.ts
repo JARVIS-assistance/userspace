@@ -23,6 +23,7 @@ export function useAssistantTts(config: TtsConfig) {
 
         if (
             current.provider === "chatterbox" ||
+            current.provider === "vibevoice" ||
             current.provider === "elevenlabs" ||
             current.provider === "openai"
         ) {

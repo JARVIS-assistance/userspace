@@ -51,6 +51,7 @@ class ActionPoller:
         self._seen: collections.OrderedDict[str, None] = collections.OrderedDict()
         self._seen_cap = seen_cap
         self._inflight: set[asyncio.Task[None]] = set()
+        self._failed_requests: collections.OrderedDict[str, str] = collections.OrderedDict()
 
     # ── 라이프사이클 ───────────────────────────────────
 
@@ -178,11 +179,20 @@ class ActionPoller:
             f"type={a.type}  desc={a.description[:40]!r}",
             flush=True,
         )
-        try:
-            status, output, error = await self.dispatcher.dispatch(pending)
-        except Exception as e:
-            logger.exception("dispatcher.dispatch raised for %s: %s", pending.action_id, e)
-            status, output, error = "failed", {}, f"client error: {e}"
+        previous_error = self._failed_requests.get(pending.request_id)
+        if previous_error:
+            status = "rejected"
+            output = {"blocked_by_request_failure": True}
+            error = f"previous action in request failed: {previous_error}"
+        else:
+            try:
+                status, output, error = await self.dispatcher.dispatch(pending)
+            except Exception as e:
+                logger.exception("dispatcher.dispatch raised for %s: %s", pending.action_id, e)
+                status, output, error = "failed", {}, f"client error: {e}"
+
+        if status in {"failed", "rejected", "timeout"} and error:
+            self._mark_request_failed(pending.request_id, error)
 
         print(
             f"[POLL] result    id={pending.action_id[:12]}…  "
@@ -214,3 +224,10 @@ class ActionPoller:
         self._seen[action_id] = None
         while len(self._seen) > self._seen_cap:
             self._seen.popitem(last=False)
+
+    def _mark_request_failed(self, request_id: str, error: str) -> None:
+        if not request_id:
+            return
+        self._failed_requests[request_id] = error
+        while len(self._failed_requests) > self._seen_cap:
+            self._failed_requests.popitem(last=False)
