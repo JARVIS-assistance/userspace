@@ -59,6 +59,27 @@ class _FakeOllamaWithIntent:
         return None
 
 
+class _FakeOllamaActionAfterBadRealtime:
+    async def stream_conversation(self, **kwargs):
+        yield EventEnvelope(type="conversation.delta", payload={"text": "죄송합니다, 못 합니다."})
+        yield EventEnvelope(
+            type="conversation.action_intent",
+            payload={"should_act": True, "execution_mode": "direct"},
+        )
+        yield EventEnvelope(type="conversation.delta", payload={"text": "잠시만요!"})
+        yield EventEnvelope(type="conversation.delta", payload={"text": "요청하신 작업 시작할게요"})
+        yield EventEnvelope(
+            type="conversation.done",
+            payload={"text": "요청한 작업을 실행했습니다.", "has_actions": True},
+        )
+
+    def cancel(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
 class ConversationManagerTests(unittest.TestCase):
     def test_done_text_restores_prefix_missing_from_delta_accumulator(self) -> None:
         async def run():
@@ -93,6 +114,17 @@ class ConversationManagerTests(unittest.TestCase):
         intent = next(event for event in events if event.type == "conversation.action_intent")
 
         self.assertFalse(intent.payload["should_act"])
+
+    def test_action_intent_clears_prior_realtime_text(self) -> None:
+        async def run():
+            manager = ConversationManager()
+            manager.ollama = _FakeOllamaActionAfterBadRealtime()  # type: ignore[assignment]
+            return [event async for event in manager.handle_stt_final("브라우저 열어줘")]
+
+        events = asyncio.run(run())
+        done = next(event for event in events if event.type == "conversation.done")
+
+        self.assertEqual(done.payload["text"], "잠시만요!요청하신 작업 시작할게요")
 
 
 if __name__ == "__main__":

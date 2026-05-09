@@ -63,8 +63,6 @@ class RealTimePartialSTT:
         self.last_partial_confidence = confidence
 
     def add_audio_chunk(self, chunk: FloatArray) -> StreamingTranscription:
-        processed_audio = self.stt_engine.dsp.process(chunk)
-        features = self.stt_engine.feature_extractor.extract(processed_audio)
         decode_audio = np.clip(chunk, -1.0, 1.0).astype(np.float32)
 
         if self.stt_engine.backend == "whisper" and self.stt_engine.whisper_backend is not None:
@@ -81,7 +79,7 @@ class RealTimePartialSTT:
                     text=self.last_partial_text,
                     is_final=False,
                     confidence=self.last_partial_confidence,
-                    mfcc_dim=int(features.shape[0]),
+                    mfcc_dim=0,
                 )
 
             if self.pending_future is None and self.executor is not None:
@@ -97,9 +95,11 @@ class RealTimePartialSTT:
                 text=self.last_partial_text,
                 is_final=False,
                 confidence=self.last_partial_confidence,
-                mfcc_dim=int(features.shape[0]),
+                mfcc_dim=0,
             )
 
+        processed_audio = self.stt_engine.dsp.process(chunk)
+        features = self.stt_engine.feature_extractor.extract(processed_audio)
         assert self.streaming_decoder is not None
         decode_result = self.streaming_decoder.feed(decode_audio)
         return StreamingTranscription(

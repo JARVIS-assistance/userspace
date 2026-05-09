@@ -166,7 +166,8 @@ export function useActionState({ sendEvent }: Options) {
                     status: "suppressed",
                     kind: "action",
                     error: String(
-                        msg.payload.error
+                        msg.payload.failure_reason
+                        || msg.payload.error
                         || msg.payload.text
                         || "assistant text is not an executable action source",
                     ),
@@ -248,7 +249,12 @@ function upsertTerminalFeed(
             description: String(payload.description || payload.action?.description || ""),
             status,
             kind: "action",
-            error: payload.error ?? payload.reason ?? payload.output?.reason ?? null,
+            error:
+                payload.failure_reason
+                ?? payload.error
+                ?? payload.reason
+                ?? payload.output?.reason
+                ?? null,
             output: payload.output ?? null,
             timestamp: Number(payload.timestamp || Date.now()),
         };
@@ -258,7 +264,12 @@ function upsertTerminalFeed(
     updated[idx] = {
         ...updated[idx],
         status,
-        error: payload.error ?? payload.reason ?? payload.output?.reason ?? updated[idx].error,
+        error:
+            payload.failure_reason
+            ?? payload.error
+            ?? payload.reason
+            ?? payload.output?.reason
+            ?? updated[idx].error,
         output: payload.output ?? updated[idx].output,
         timestamp: Number(payload.timestamp || Date.now()),
     };

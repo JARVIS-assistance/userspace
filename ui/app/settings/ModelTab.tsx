@@ -6,16 +6,20 @@ interface Props {
     models: ModelConfig[];
     editing: ModelConfig | null;
     loading: boolean;
+    error: string | null;
     onEdit: (m: ModelConfig | null) => void;
     onSave: (m: ModelConfig) => void;
+    onDelete: (m: ModelConfig) => void;
 }
 
 export default function ModelTab({
     models,
     editing,
     loading,
+    error,
     onEdit,
     onSave,
+    onDelete,
 }: Props) {
     return (
         <div>
@@ -51,6 +55,18 @@ export default function ModelTab({
                                     onClick={() => onEdit({ ...m })}
                                 >
                                     수정
+                                </button>
+                                <button
+                                    style={css.btn("danger")}
+                                    onClick={() => onDelete(m)}
+                                    disabled={loading || !m.id}
+                                    title={
+                                        m.id
+                                            ? "모델 설정 삭제"
+                                            : "저장되지 않은 모델은 삭제할 수 없습니다"
+                                    }
+                                >
+                                    삭제
                                 </button>
                             </div>
                         </div>
@@ -89,6 +105,18 @@ export default function ModelTab({
                         )}
                     </div>
                 ))}
+            {error && (
+                <p
+                    role="alert"
+                    style={{
+                        color: "rgba(220,80,60,0.9)",
+                        fontSize: 12,
+                        margin: "8px 0 0",
+                    }}
+                >
+                    {error}
+                </p>
+            )}
             {editing && (
                 <ModelForm
                     model={editing}

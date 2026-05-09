@@ -68,6 +68,31 @@ class ClientActionAPIClient:
 
     # ── Polling ────────────────────────────────────────
 
+    async def upsert_runtime_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        session = await self._get_session()
+        try:
+            async with session.put(
+                "/client/runtime-profile",
+                json=profile,
+                headers=self._headers(),
+            ) as resp:
+                if resp.status == 401:
+                    body = await resp.text()
+                    raise UnauthorizedError(
+                        f"401 from /client/runtime-profile resp_body={body[:300]}"
+                    )
+                if resp.status not in (200, 201, 204):
+                    body = await resp.text()
+                    raise APIError(
+                        f"upsert_runtime_profile HTTP {resp.status}: {body[:300]}"
+                    )
+                if resp.status == 204:
+                    return {}
+                data = await resp.json()
+        except aiohttp.ClientError as e:
+            raise APIError(f"upsert_runtime_profile network error: {e}") from e
+        return data if isinstance(data, dict) else {}
+
     async def fetch_pending(self, limit: int = 20) -> list[PendingClientAction]:
         session = await self._get_session()
         try:

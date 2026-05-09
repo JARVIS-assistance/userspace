@@ -118,6 +118,7 @@ function FeedRow({
                     {formatDescription(entry)}
                 </div>
             )}
+            <ScreenshotPreview entry={entry} />
             {entry.error && (
                 <div
                     style={{
@@ -130,6 +131,33 @@ function FeedRow({
                     {formatError(entry.error)}
                 </div>
             )}
+        </div>
+    );
+}
+
+function ScreenshotPreview({ entry }: { entry: FeedEntry }) {
+    const src = screenshotDataUrl(entry);
+    if (!src) return null;
+    return (
+        <div
+            style={{
+                marginTop: 8,
+                border: "1px solid rgba(120,80,30,0.25)",
+                borderRadius: 6,
+                overflow: "hidden",
+                background: "rgba(0,0,0,0.35)",
+            }}
+        >
+            <img
+                src={src}
+                alt="Screenshot result"
+                style={{
+                    display: "block",
+                    width: "100%",
+                    maxHeight: 180,
+                    objectFit: "contain",
+                }}
+            />
         </div>
     );
 }
@@ -218,7 +246,23 @@ function terminalDescription(entry: FeedEntry): string {
             ? `${index}번째 검색 결과를 열었습니다: ${title}`
             : `${index}번째 검색 결과를 열었습니다.`;
     }
+    if (
+        entry.status === "completed"
+        && (entry.type === "screenshot" || entry.type === "screen.screenshot")
+    ) {
+        return "현재 화면을 캡처했습니다.";
+    }
     return entry.description;
+}
+
+function screenshotDataUrl(entry: FeedEntry): string {
+    if (entry.status !== "completed") return "";
+    if (entry.type !== "screenshot" && entry.type !== "screen.screenshot") return "";
+    const output = entry.output || {};
+    const imageBase64 = String(output.image_base64 || "");
+    if (!imageBase64) return "";
+    const mimeType = String(output.mime_type || "image/png");
+    return `data:${mimeType};base64,${imageBase64}`;
 }
 
 function firstLine(value: unknown): string {
@@ -230,6 +274,27 @@ function firstLine(value: unknown): string {
 }
 
 function formatError(error: string): string {
+    if (/backend_validation_failed/i.test(error)) {
+        return "백엔드 액션 검증을 통과하지 못했습니다.";
+    }
+    if (/compiler_unavailable/i.test(error)) {
+        return "액션 컴파일러를 사용할 수 없어 실행하지 않았습니다.";
+    }
+    if (/policy_disabled/i.test(error)) {
+        return "정책에서 비활성화된 액션입니다.";
+    }
+    if (/confirmation_rejected/i.test(error)) {
+        return "사용자가 실행을 거부했습니다.";
+    }
+    if (/handler_unsupported/i.test(error)) {
+        return "이 클라이언트에서 지원하지 않는 액션입니다.";
+    }
+    if (/os_permission_missing|System Events|not authorized|accessibility|허용되지 않습니다|not allowed assistive access/i.test(error)) {
+        return "macOS 설정 > 개인정보 보호 및 보안 > 손쉬운 사용/자동화에서 JARVIS, Electron 또는 터미널 권한을 허용한 뒤 다시 시도하세요.";
+    }
+    if (/execution_failed/i.test(error)) {
+        return "액션 실행 중 오류가 발생했습니다.";
+    }
     if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
         return "Chrome에서 보기 > 개발자 > Apple Events의 JavaScript 허용을 켠 뒤 다시 시도하세요.";
     }
@@ -238,9 +303,6 @@ function formatError(error: string): string {
     }
     if (/timed out|timeout/i.test(error)) {
         return "결과가 제시간에 확인되지 않았습니다.";
-    }
-    if (/policy_disabled/i.test(error)) {
-        return "정책에서 비활성화된 액션입니다.";
     }
     return error;
 }

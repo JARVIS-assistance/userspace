@@ -35,10 +35,15 @@ export interface TtsConfig {
     volume: number;
 }
 
+export interface VisualConfig {
+    particleDensity: number;
+}
+
 export interface SettingsData {
     models: ModelConfig[];
     persona: Persona;
     tts: TtsConfig;
+    visual: VisualConfig;
 }
 
 export const PERSONA_ICONS = [
@@ -74,6 +79,10 @@ export const DEFAULT_TTS: TtsConfig = {
     rate: 1,
     pitch: 1,
     volume: 1,
+};
+
+export const DEFAULT_VISUAL: VisualConfig = {
+    particleDensity: 1,
 };
 
 export const EMPTY_MODEL: ModelConfig = {

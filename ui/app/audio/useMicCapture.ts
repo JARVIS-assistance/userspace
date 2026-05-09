@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { float32ToInt16Array, sharedAudioRef } from "./sharedAudioRef";
+import { float32ToPcm16Base64, sharedAudioRef } from "./sharedAudioRef";
 
 const SAMPLE_RATE = 16000;
 const FFT_SIZE = 256;
@@ -11,18 +11,24 @@ const CHUNK_SAMPLES = ${CHUNK_SAMPLES};
 class PCMCapture extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._buf = [];
-    this._count = 0;
+    this._buf = new Float32Array(CHUNK_SAMPLES);
+    this._offset = 0;
   }
   process(inputs) {
     const ch = inputs[0]?.[0];
     if (!ch) return true;
-    for (let i = 0; i < ch.length; i++) this._buf.push(ch[i]);
-    this._count += ch.length;
-    if (this._count >= CHUNK_SAMPLES) {
-      this.port.postMessage(new Float32Array(this._buf));
-      this._buf = [];
-      this._count = 0;
+    let read = 0;
+    while (read < ch.length) {
+      const writable = Math.min(CHUNK_SAMPLES - this._offset, ch.length - read);
+      this._buf.set(ch.subarray(read, read + writable), this._offset);
+      this._offset += writable;
+      read += writable;
+      if (this._offset >= CHUNK_SAMPLES) {
+        const out = this._buf;
+        this._buf = new Float32Array(CHUNK_SAMPLES);
+        this._offset = 0;
+        this.port.postMessage(out, [out.buffer]);
+      }
     }
     return true;
   }
@@ -112,7 +118,7 @@ export function useMicCapture({ sendEvent, wsRef }: Options) {
                         JSON.stringify({
                             type: "stt.audio.chunk",
                             payload: {
-                                samples: float32ToInt16Array(f32),
+                                audio_b64: float32ToPcm16Base64(f32),
                                 sample_rate: sampleRate,
                             },
                         }),

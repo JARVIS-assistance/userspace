@@ -3,7 +3,9 @@ import { COLORS, paletteFor } from "./colors";
 import { getAudioLevel, isMiniMode } from "./physics";
 import type { Particle } from "./types";
 
-const SPHERE_COUNT = 600;
+const DEFAULT_SPHERE_COUNT = 600;
+const MIN_DENSITY = 0.25;
+const MAX_DENSITY = 1;
 
 export class SphereLayer {
     particles: Particle[] = [];
@@ -14,15 +16,17 @@ export class SphereLayer {
     private glowR = 222;
     private glowG = 184;
     private glowB = 135;
+    private sphereCount = DEFAULT_SPHERE_COUNT;
 
-    init(W: number, H: number) {
+    init(W: number, H: number, density = MAX_DENSITY) {
+        this.configureDensity(density);
         this.particles = [];
         this.colorR = [];
         this.colorG = [];
         this.colorB = [];
         const cx = W * 0.85;
         const cy = H * 0.15;
-        for (let i = 0; i < SPHERE_COUNT; i++) {
+        for (let i = 0; i < this.sphereCount; i++) {
             const ci = (Math.random() * COLORS.length) | 0;
             this.particles.push({
                 x: cx + (Math.random() - 0.5) * 10,
@@ -42,6 +46,13 @@ export class SphereLayer {
             this.colorG.push(COLORS[ci][1]);
             this.colorB.push(COLORS[ci][2]);
         }
+    }
+
+    private configureDensity(value: number) {
+        const density = Number.isFinite(value)
+            ? Math.min(MAX_DENSITY, Math.max(MIN_DENSITY, value))
+            : MAX_DENSITY;
+        this.sphereCount = Math.max(160, Math.round(DEFAULT_SPHERE_COUNT * density));
     }
 
     updateTargets(now: number, W: number, H: number) {

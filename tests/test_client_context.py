@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.client_context import build_runtime_headers, list_available_applications
+from app.client_context import (
+    build_runtime_headers,
+    build_runtime_profile,
+    list_available_application_profiles,
+    list_available_applications,
+)
 from app.config import ActionSettings, TerminalSettings, ToggleSettings
 
 
@@ -23,9 +28,12 @@ class ClientContextTests(unittest.TestCase):
         self.assertEqual(headers["X-Client-Browser"], "chrome")
         self.assertEqual(headers["X-Client-Search-Engine"], "google")
         self.assertIn("open_url", headers["X-Client-Capabilities"])
-        self.assertIn("app.open", headers["X-Client-Capabilities"])
-        self.assertIn("keyboard.type", headers["X-Client-Capabilities"])
-        self.assertIn("screen.screenshot", headers["X-Client-Capabilities"])
+        self.assertNotIn("app.open", headers["X-Client-Capabilities"])
+        self.assertNotIn("keyboard.type", headers["X-Client-Capabilities"])
+        self.assertNotIn("screen.screenshot", headers["X-Client-Capabilities"])
+        self.assertIn("app.open", headers["X-Client-Supported-Capabilities"])
+        self.assertIn("keyboard.type", headers["X-Client-Supported-Capabilities"])
+        self.assertIn("screen.screenshot", headers["X-Client-Supported-Capabilities"])
         self.assertIn("browser.search", headers["X-Client-Enabled-Capabilities"])
         self.assertEqual(headers["X-Client-Action-Contract-Version"], "1.0")
         self.assertIn("action_dispatch", headers["X-Client-Action-Contract"])
@@ -66,6 +74,11 @@ class ClientContextTests(unittest.TestCase):
                 list_available_applications(),
                 ["Google Chrome", "Sublime Text"],
             )
+            profiles = list_available_application_profiles()
+            chrome = next(item for item in profiles if item["name"] == "Google Chrome")
+            self.assertIn("Chrome", chrome["aliases"])
+            sublime = next(item for item in profiles if item["name"] == "Sublime Text")
+            self.assertIn("sublimetext", sublime["aliases"])
 
     def test_list_available_applications_from_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +98,17 @@ class ClientContextTests(unittest.TestCase):
                     list_available_applications(),
                     ["Google Chrome", "Sublime Text"],
                 )
+
+    def test_build_runtime_profile_includes_applications(self) -> None:
+        with patch.dict(os.environ, {"USERSPACE_APPLICATIONS": "Google Chrome"}):
+            profile = build_runtime_profile(ActionSettings())
+
+        self.assertIn(profile["platform"], {"macos", "windows", "linux"})
+        self.assertEqual(profile["applications"][0]["name"], "Google Chrome")
+        self.assertIn("Chrome", profile["applications"][0]["aliases"])
+        self.assertIn("browser.search", profile["enabled_capabilities"])
+        self.assertIn("terminal.run", profile["supported_capabilities"])
+        self.assertNotIn("terminal.run", profile["capabilities"])
 
 
 if __name__ == "__main__":

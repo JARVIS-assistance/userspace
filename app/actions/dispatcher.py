@@ -341,16 +341,21 @@ class ActionDispatcher:
         fut: asyncio.Future[ConfirmDecision] = asyncio.get_running_loop().create_future()
         self._pending_confirms[action_id] = fut
 
-        await self._safe_emit(EventEnvelope(
-            type="client_action.pending",
-            payload={
-                "action_id": action_id,
-                "request_id": pending.request_id,
-                "action": pending.action.model_dump(),
-                "timeout_sec": self._confirm_timeout,
-                "timestamp": _now_ms(),
-            },
-        ))
+        asyncio.create_task(
+            self._safe_emit(
+                EventEnvelope(
+                    type="client_action.pending",
+                    payload={
+                        "action_id": action_id,
+                        "request_id": pending.request_id,
+                        "action": pending.action.model_dump(),
+                        "timeout_sec": self._confirm_timeout,
+                        "timestamp": _now_ms(),
+                    },
+                )
+            ),
+            name=f"client_action_pending_{action_id}",
+        )
 
         try:
             return await asyncio.wait_for(fut, timeout=self._confirm_timeout)

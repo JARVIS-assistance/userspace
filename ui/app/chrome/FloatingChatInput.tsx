@@ -1,8 +1,6 @@
 import { forwardRef } from "react";
 
 interface Props {
-    x: number;
-    y: number;
     value: string;
     stopVisible: boolean;
     inputDisabled: boolean;
@@ -13,21 +11,20 @@ interface Props {
 
 const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
     function FloatingChatInput(
-        { x, y, value, stopVisible, inputDisabled, onChange, onSubmit, onStop },
+        { value, stopVisible, inputDisabled, onChange, onSubmit, onStop },
         ref,
     ) {
         const width = 360;
-        const left = clamp(x - width / 2, 8, window.innerWidth - width - 8);
-        const top = clamp(y + 16, 8, window.innerHeight - 58);
 
         return (
             <div
                 style={{
                     position: "absolute",
-                    left,
-                    top,
+                    left: "50%",
+                    bottom: 18,
+                    transform: "translateX(-50%)",
                     zIndex: 9000,
-                    width,
+                    width: `min(${width}px, calc(100vw - 24px))`,
                     display: "flex",
                     gap: 8,
                     pointerEvents: "auto",
@@ -104,10 +101,5 @@ const FloatingChatInput = forwardRef<HTMLInputElement, Props>(
         );
     },
 );
-
-function clamp(value: number, min: number, max: number): number {
-    if (max < min) return min;
-    return Math.max(min, Math.min(max, value));
-}
 
 export default FloatingChatInput;

@@ -4,11 +4,23 @@ import type { ActionsConfig } from "./settings/actionsConfig";
 import ModelTab from "./settings/ModelTab";
 import PersonaTab from "./settings/PersonaTab";
 import TtsTab from "./settings/TtsTab";
-import { loadLocal, resolveApiBase, saveLocal } from "./settings/storage";
+import VisualTab from "./settings/VisualTab";
+import {
+    deleteModelConfig,
+    fetchModelConfigs,
+    saveModelConfig,
+} from "./settings/modelApi";
+import { loadLocal, saveLocal } from "./settings/storage";
 import { css } from "./settings/styles";
-import type { ModelConfig, Persona, SettingsData, TtsConfig } from "./settings/types";
+import type {
+    ModelConfig,
+    Persona,
+    SettingsData,
+    TtsConfig,
+    VisualConfig,
+} from "./settings/types";
 
-type TabKey = "model" | "persona" | "tts" | "actions";
+type TabKey = "model" | "persona" | "visual" | "tts" | "actions";
 
 interface Props {
     open: boolean;
@@ -38,6 +50,7 @@ export default function SettingsModal({
     const [data, setData] = useState<SettingsData>(loadLocal);
     const [editing, setEditing] = useState<ModelConfig | null>(null);
     const [loading, setLoading] = useState(false);
+    const [modelError, setModelError] = useState<string | null>(null);
 
     const hdrs = useCallback(
         (): Record<string, string> => ({
@@ -50,19 +63,17 @@ export default function SettingsModal({
     const sync = useCallback(async () => {
         setLoading(true);
         try {
-            const apiBase = await resolveApiBase();
-            const res = await fetch(`${apiBase}/chat/model-config`, {
-                headers: hdrs(),
-            });
-            if (res.ok) {
-                const models: ModelConfig[] = await res.json();
+            const models = await fetchModelConfigs(hdrs);
+            if (models) {
                 setData((prev) => {
                     const next = { ...prev, models };
                     saveLocal(next);
                     return next;
                 });
             }
-        } catch (_) {}
+        } catch (_) {
+            setModelError("모델 목록을 불러오지 못했습니다.");
+        }
         setLoading(false);
     }, [hdrs]);
 
@@ -73,39 +84,46 @@ export default function SettingsModal({
     const saveModel = useCallback(
         async (m: ModelConfig) => {
             setLoading(true);
+            setModelError(null);
             try {
-                const isNew = !m.id;
-                const apiBase = await resolveApiBase();
-                const res = await fetch(
-                    isNew
-                        ? `${apiBase}/chat/model-config`
-                        : `${apiBase}/chat/model-config/${m.id}`,
-                    {
-                        method: isNew ? "POST" : "PUT",
-                        headers: hdrs(),
-                        body: JSON.stringify({
-                            provider_mode: m.provider_mode,
-                            provider_name: m.provider_name,
-                            model_name: m.model_name,
-                            api_key: m.api_key || undefined,
-                            endpoint: m.endpoint || undefined,
-                            is_default: m.is_default,
-                            supports_stream: m.supports_stream,
-                            supports_realtime: m.supports_realtime,
-                            transport: m.transport,
-                            input_modalities: m.input_modalities,
-                            output_modalities: m.output_modalities,
-                        }),
-                    },
-                );
-                if (res.ok) {
+                if (await saveModelConfig(m, hdrs)) {
                     await sync();
                     setEditing(null);
+                } else {
+                    setModelError("모델 설정을 저장하지 못했습니다.");
                 }
-            } catch (_) {}
+            } catch (_) {
+                setModelError("모델 설정을 저장하지 못했습니다.");
+            }
             setLoading(false);
         },
         [hdrs, sync],
+    );
+
+    const deleteModel = useCallback(
+        async (m: ModelConfig) => {
+            if (loading) return;
+            if (!m.id) {
+                setModelError("저장되지 않은 모델은 삭제할 수 없습니다.");
+                return;
+            }
+            const ok = window.confirm(`${m.model_name} 모델 설정을 삭제할까요?`);
+            if (!ok) return;
+            setLoading(true);
+            setModelError(null);
+            try {
+                if (await deleteModelConfig(m, hdrs)) {
+                    await sync();
+                    setEditing(null);
+                } else {
+                    setModelError("모델 설정을 삭제하지 못했습니다.");
+                }
+            } catch (_) {
+                setModelError("모델 설정을 삭제하지 못했습니다.");
+            }
+            setLoading(false);
+        },
+        [hdrs, loading, sync],
     );
 
     const setPerson = useCallback((u: Partial<Persona>) => {
@@ -120,6 +138,15 @@ export default function SettingsModal({
     const setTts = useCallback((u: Partial<TtsConfig>) => {
         setData((prev) => {
             const next = { ...prev, tts: { ...prev.tts, ...u } };
+            saveLocal(next);
+            onSettingsChange?.(next);
+            return next;
+        });
+    }, [onSettingsChange]);
+
+    const setVisual = useCallback((u: Partial<VisualConfig>) => {
+        setData((prev) => {
+            const next = { ...prev, visual: { ...prev.visual, ...u } };
             saveLocal(next);
             onSettingsChange?.(next);
             return next;
@@ -158,6 +185,12 @@ export default function SettingsModal({
                         TTS
                     </button>
                     <button
+                        style={css.tab(tab === "visual")}
+                        onClick={() => setTab("visual")}
+                    >
+                        VISUAL
+                    </button>
+                    <button
                         style={css.tab(tab === "actions")}
                         onClick={() => setTab("actions")}
                     >
@@ -172,6 +205,8 @@ export default function SettingsModal({
                         loading={loading}
                         onEdit={setEditing}
                         onSave={saveModel}
+                        onDelete={deleteModel}
+                        error={modelError}
                     />
                 )}
 
@@ -181,6 +216,10 @@ export default function SettingsModal({
 
                 {tab === "tts" && (
                     <TtsTab config={data.tts} onChange={setTts} />
+                )}
+
+                {tab === "visual" && (
+                    <VisualTab config={data.visual} onChange={setVisual} />
                 )}
 
                 {tab === "actions" && (

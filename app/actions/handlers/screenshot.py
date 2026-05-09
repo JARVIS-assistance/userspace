@@ -7,6 +7,7 @@ target 없으면 임시 디렉터리에 저장 후 경로 반환.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import sys
 import tempfile
@@ -69,6 +70,11 @@ def make_screenshot(enabled: bool, allowed_paths: tuple[str, ...] = ()):
                 f"screenshot failed rc={proc.returncode}: "
                 f"{err.decode(errors='replace')[:300]}"
             )
-        return {"path": str(path)}
+        image_bytes = path.read_bytes()
+        return {
+            "path": str(path),
+            "mime_type": "image/png",
+            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+        }
 
     return screenshot

@@ -4,6 +4,12 @@ import SettingsModal from "./SettingsModal";
 import ActionConfirmModal from "./actions/ActionConfirmModal";
 import ActionFeed from "./actions/ActionFeed";
 import { cleanAssistantText, displayDoneText, displayPlanStep } from "./actions/text";
+import {
+    formatProgressText,
+    isExternalActionType,
+    nextActionText,
+    waitingMessage,
+} from "./actions/uiText";
 import { useActionState } from "./actions/useActionState";
 import { sharedAudioRef } from "./audio/sharedAudioRef";
 import { useAssistantTts } from "./audio/useAssistantTts";
@@ -12,6 +18,7 @@ import AssistantSubtitle from "./chrome/AssistantSubtitle";
 import BottomBar from "./chrome/BottomBar";
 import CornerActions from "./chrome/CornerActions";
 import FloatingChatInput from "./chrome/FloatingChatInput";
+import PlanToast from "./chrome/PlanToast";
 import SphereOverlay from "./chrome/SphereOverlay";
 import TitleBar from "./chrome/TitleBar";
 import type { ActionsConfig } from "./settings/actionsConfig";
@@ -37,14 +44,16 @@ export default function App({ token, onLogout }: AppProps) {
     const [viewMode, setViewMode] = useState<ViewMode>("waveform");
     const [chatInput, setChatInput] = useState("");
     const [chatOpen, setChatOpen] = useState(false);
-    const [chatAnchor, setChatAnchor] = useState({ x: 0, y: 0 });
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [settingsData, setSettingsData] = useState<SettingsData>(loadLocal);
+    const [conversationActionBlock, setConversationActionBlock] = useState(false);
+    const [actionIntentActive, setActionIntentActive] = useState(false);
+    const [planToast, setPlanToast] = useState("");
 
     const assistantDeltaBufferRef = useRef("");
     const chatInputRef = useRef<HTMLInputElement>(null);
     const autoMinimizeActionRef = useRef<string | null>(null);
-    const pointerRef = useRef({ x: 0, y: 0 });
+    const activePlanStepIdRef = useRef<string | null>(null);
 
     // ── Actions config (settings 탭) ──
     const [actionsConfig, setActionsConfig] = useState<ActionsConfig | null>(null);
@@ -74,8 +83,10 @@ export default function App({ token, onLogout }: AppProps) {
             || entry.status === "running"
             || entry.status === "retrying_compile"
         );
-    const inputLocked = convBusy || actionBusy;
-    const micLocked = actionBusy;
+    const actionVisualActive = actionIntentActive || actionBusy;
+    const inputLocked = conversationActionBlock;
+    const stopVisible = convBusy || actionVisualActive;
+    const micLocked = actionVisualActive;
     const assistantTts = useAssistantTts(settingsData.tts);
 
     // ── TTS events ───────────────────────────────────────
@@ -98,6 +109,22 @@ export default function App({ token, onLogout }: AppProps) {
         };
     }, []);
 
+    useEffect(() => {
+        if (!actionVisualActive) return;
+
+        setIsSpeaking(true);
+        sharedAudioRef.active = false;
+        sharedAudioRef.state = "speaking";
+        sharedAudioRef.speakingPulse = Math.max(sharedAudioRef.speakingPulse, 0.95);
+
+        const timer = window.setInterval(() => {
+            sharedAudioRef.state = "speaking";
+            sharedAudioRef.speakingPulse = Math.max(sharedAudioRef.speakingPulse, 0.85);
+        }, 180);
+
+        return () => window.clearInterval(timer);
+    }, [actionVisualActive]);
+
     // ── Electron window state IPC ────────────────────────
     useEffect(() => {
         const bridge = (window as any).jarvisBridge;
@@ -116,23 +143,6 @@ export default function App({ token, onLogout }: AppProps) {
             c2?.();
             c3?.();
         };
-    }, []);
-
-    useEffect(() => {
-        pointerRef.current = {
-            x: Math.round(window.innerWidth / 2),
-            y: Math.round(window.innerHeight / 2),
-        };
-        setChatAnchor(pointerRef.current);
-
-        const onPointerMove = (event: PointerEvent) => {
-            pointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-        };
-        window.addEventListener("pointermove", onPointerMove);
-        return () => window.removeEventListener("pointermove", onPointerMove);
     }, []);
 
     const minimizeForExternalAction = useCallback(async (actionId: string) => {
@@ -174,16 +184,58 @@ export default function App({ token, onLogout }: AppProps) {
 
         if (type === "conversation.plan_step") {
             const status = String(payload.status || "");
-            if (status === "completed") {
-                setAssistantSubtitle("");
-                setAssistantSubtitleDim(false);
+            const stepId = String(payload.id || payload.step_id || "");
+            const isTrackedStep =
+                !stepId
+                || stepId === activePlanStepIdRef.current
+                || !activePlanStepIdRef.current;
+
+            if (status === "queued" || status === "running" || status === "in_progress") {
+                setConversationActionBlock(false);
+                const description = displayPlanStep(payload);
+                if (description) {
+                    setPlanToast(description);
+                    activePlanStepIdRef.current = stepId || activePlanStepIdRef.current;
+                }
                 return;
             }
-            const description = displayPlanStep(payload);
-            if (description) {
+            if (
+                status === "completed"
+                || status === "failed"
+                || status === "timeout"
+                || status === "rejected"
+                || status === "invalid"
+            ) {
+                if (isTrackedStep) {
+                    setConversationActionBlock(false);
+                    setPlanToast("");
+                    activePlanStepIdRef.current = null;
+                    setActionIntentActive(false);
+                }
+                return;
+            }
+            return;
+        }
+
+        if (type === "conversation.thinking") {
+            setConversationActionBlock(false);
+            setPlanToast(waitingMessage());
+            activePlanStepIdRef.current = `thinking:${String(payload.mode || "realtime")}`;
+            setAssistantSubtitle(waitingMessage());
+            setAssistantSubtitleDim(true);
+            return;
+        }
+
+        if (type === "conversation.action_intent") {
+            const shouldAct = payload.should_act === true;
+            setConversationActionBlock(false);
+            setActionIntentActive(shouldAct);
+            if (shouldAct) {
                 setIsSpeaking(true);
-                setAssistantSubtitle(description);
+                setAssistantSubtitle("진행하겠습니다!");
                 setAssistantSubtitleDim(true);
+                sharedAudioRef.state = "speaking";
+                sharedAudioRef.speakingPulse = 1;
             }
             return;
         }
@@ -196,6 +248,22 @@ export default function App({ token, onLogout }: AppProps) {
             if (description && !action.requires_confirm) {
                 setIsSpeaking(true);
                 setAssistantSubtitle(formatProgressText(description));
+                setAssistantSubtitleDim(true);
+            }
+            return;
+        }
+
+        if (type === "client_action.pending") {
+            const action = payload.action || {};
+            const actionId = String(payload.action_id || "");
+            const actionType = String(action.type || "");
+            if (
+                actionId
+                && isExternalActionType(actionType)
+                && action.requires_confirm !== true
+                && payload.requires_confirm !== true
+            ) {
+                void minimizeForExternalAction(actionId);
             }
             return;
         }
@@ -207,6 +275,7 @@ export default function App({ token, onLogout }: AppProps) {
             if (description && payload.requires_confirm !== true) {
                 setIsSpeaking(true);
                 setAssistantSubtitle(formatProgressText(description));
+                setAssistantSubtitleDim(true);
             }
             if (
                 actionId
@@ -219,18 +288,29 @@ export default function App({ token, onLogout }: AppProps) {
         }
 
         if (
-            type === "client_action.failed"
+            type === "client_action.completed"
+            || type === "client_action.failed"
             || type === "client_action.timeout"
+            || type === "client_action.rejected"
             || type === "conversation.action_result"
         ) {
-            const status = String(payload.status || (type.endsWith("failed") ? "failed" : ""));
+            const status = String(
+                payload.status
+                || (type === "client_action.completed" ? "completed" : "")
+                || (type === "client_action.rejected" ? "rejected" : "")
+                || (type.endsWith("failed") ? "failed" : ""),
+            );
             if (
                 type === "client_action.failed"
                 || type === "client_action.timeout"
                 || status === "failed"
                 || status === "timeout"
             ) {
+                setActionIntentActive(false);
                 handleExternalActionFailure(payload);
+            }
+            if (status === "completed" || status === "rejected" || status === "invalid") {
+                setActionIntentActive(false);
             }
         }
     }, [handleExternalActionFailure, minimizeForExternalAction]);
@@ -264,17 +344,26 @@ export default function App({ token, onLogout }: AppProps) {
             if (text) setUserSubtitle(text);
             setIsSpeaking(true);
             setConvBusy(true);
+            setConversationActionBlock(true);
             assistantDeltaBufferRef.current = "";
             setAssistantSubtitle("");
             setAssistantSubtitleDim(false);
+            setActionIntentActive(false);
+            setPlanToast("");
+            activePlanStepIdRef.current = null;
         } else if (type === "stt.state") {
             setSttState(String(payload.status || payload.state || "idle"));
         } else if (type === "chat.delta" || type === "conversation.delta") {
+            setConversationActionBlock(false);
             assistantDeltaBufferRef.current += String(payload.text || "");
             setAssistantSubtitle(cleanAssistantText(assistantDeltaBufferRef.current));
             setAssistantSubtitleDim(false);
             sharedAudioRef.speakingPulse = 1;
         } else if (type === "chat.done" || type === "conversation.done") {
+            setConversationActionBlock(false);
+            setActionIntentActive(false);
+            setPlanToast("");
+            activePlanStepIdRef.current = null;
             const doneText = displayDoneText(payload);
             const spokenText =
                 cleanAssistantText(String(payload.text || "")) ||
@@ -284,23 +373,6 @@ export default function App({ token, onLogout }: AppProps) {
             setAssistantSubtitleDim(false);
             assistantDeltaBufferRef.current = "";
             assistantTts.speak(spokenText);
-        } else if (type === "conversation.thinking") {
-            setAssistantSubtitle(waitingMessage());
-            setAssistantSubtitleDim(true);
-        } else if (type === "conversation.plan_step") {
-            const status = String(payload.status || "");
-            if (status === "completed") {
-                setAssistantSubtitle("");
-                setAssistantSubtitleDim(false);
-                return;
-            }
-            const description = displayPlanStep(payload);
-            if (description) {
-                const stillRunning = !status || status === "in_progress";
-                setIsSpeaking(true);
-                setAssistantSubtitle(description);
-                setAssistantSubtitleDim(stillRunning);
-            }
         } else if (type === "conversation.state") {
             const state = String(payload.state || "idle");
             if (state === "speaking") {
@@ -309,21 +381,28 @@ export default function App({ token, onLogout }: AppProps) {
                 sharedAudioRef.state = "speaking";
             } else if (state === "processing") {
                 setConvBusy(true);
+                setConversationActionBlock(false);
                 setIsSpeaking(true);
                 setAssistantSubtitle((current) => current || waitingMessage());
                 setAssistantSubtitleDim(true);
             } else if (state === "idle") {
                 setIsSpeaking(false);
                 setConvBusy(false);
+                setConversationActionBlock(false);
                 sharedAudioRef.state = "idle";
             } else if (state === "listening") {
                 setIsSpeaking(false);
                 setConvBusy(false);
+                setConversationActionBlock(false);
                 sharedAudioRef.state = "listening";
             }
         } else if (type === "conversation.cancelled") {
             setIsSpeaking(false);
             setConvBusy(false);
+            setConversationActionBlock(false);
+            setActionIntentActive(false);
+            setPlanToast("");
+            activePlanStepIdRef.current = null;
             setAssistantSubtitleDim(false);
             assistantDeltaBufferRef.current = "";
             sharedAudioRef.state = "idle";
@@ -356,16 +435,24 @@ export default function App({ token, onLogout }: AppProps) {
         setUserSubtitle(text);
         setIsSpeaking(true);
         setConvBusy(true);
+        if (convBusy || actionVisualActive) {
+            sendEvent("conversation.cancel", {});
+        }
+        setConversationActionBlock(true);
         assistantDeltaBufferRef.current = "";
         setAssistantSubtitle("");
         setAssistantSubtitleDim(false);
+        setActionIntentActive(false);
+        setPlanToast("");
+        activePlanStepIdRef.current = null;
         sendEvent("chat.request", { text });
         setChatInput("");
-    }, [chatInput, inputLocked, sendEvent]);
+    }, [chatInput, inputLocked, sendEvent, convBusy, actionVisualActive]);
 
     const handleStop = useCallback(() => {
         if (!convBusy) return;
         sendEvent("conversation.cancel", {});
+        setConversationActionBlock(false);
         // 서버 응답 도착 전 즉시 UI 반응
         setConvBusy(false);
         setIsSpeaking(false);
@@ -386,9 +473,6 @@ export default function App({ token, onLogout }: AppProps) {
                 if (tag === "INPUT" || tag === "TEXTAREA") return;
                 e.preventDefault();
                 if (inputLocked) return;
-                if (viewMode === "sphere" || viewMode === "minimizing") {
-                    setChatAnchor(pointerRef.current);
-                }
                 setChatOpen(true);
                 setTimeout(() => chatInputRef.current?.focus(), 50);
             }
@@ -427,6 +511,8 @@ export default function App({ token, onLogout }: AppProps) {
         startY: 0,
         winX: 0,
         winY: 0,
+        winW: 560,
+        winH: 160,
         moved: false,
     });
 
@@ -442,6 +528,8 @@ export default function App({ token, onLogout }: AppProps) {
             startY: e.screenY,
             winX: bounds.x,
             winY: bounds.y,
+            winW: bounds.width,
+            winH: bounds.height,
             moved: false,
         };
     };
@@ -465,8 +553,8 @@ export default function App({ token, onLogout }: AppProps) {
                 bridge.moveWindow({
                     x: Math.round(dragInfo.current.winX + deltaX),
                     y: Math.round(dragInfo.current.winY + deltaY),
-                    width: 560,
-                    height: 160,
+                    width: dragInfo.current.winW,
+                    height: dragInfo.current.winH,
                 });
             }
         };
@@ -487,7 +575,6 @@ export default function App({ token, onLogout }: AppProps) {
         };
     }, [handleSphereClick]);
 
-    const activeSubtitle = isSpeaking ? assistantSubtitle : userSubtitle;
     const isNormal = viewMode === "waveform" || viewMode === "restoring";
     const isSphere = viewMode === "sphere";
     const isMinimizing = viewMode === "minimizing";
@@ -505,6 +592,7 @@ export default function App({ token, onLogout }: AppProps) {
         >
             <SandParticles
                 viewMode={viewMode}
+                particleDensity={settingsData.visual.particleDensity}
                 onMinimizeDone={handleMinimizeDone}
                 onRestoreDone={handleRestoreDone}
                 onSphereClick={handleSphereClick}
@@ -516,7 +604,7 @@ export default function App({ token, onLogout }: AppProps) {
 
             {isSphere && (
                 <SphereOverlay
-                    subtitle={activeSubtitle}
+                    subtitle=""
                     micActive={mic.active}
                     onSphereClick={handleSphereClick}
                     onMouseDown={handleDragStart}
@@ -531,14 +619,18 @@ export default function App({ token, onLogout }: AppProps) {
             )}
 
             {isNormal && (
-                <BottomBar
+                <PlanToast text={planToast} chatOpen={chatOpen} />
+            )}
+
+            {isNormal && (
+            <BottomBar
                     ref={chatInputRef}
                     userSubtitle={userSubtitle}
                     sttListening={sttState === "listening"}
                     micActive={mic.active}
                     chatOpen={chatOpen}
                     chatInput={chatInput}
-                    stopVisible={convBusy}
+                    stopVisible={stopVisible}
                     inputDisabled={inputLocked}
                     onChatInputChange={setChatInput}
                     onChatSubmit={handleChatSubmit}
@@ -549,10 +641,8 @@ export default function App({ token, onLogout }: AppProps) {
             {isSphere && chatOpen && (
                 <FloatingChatInput
                     ref={chatInputRef}
-                    x={chatAnchor.x}
-                    y={chatAnchor.y}
                     value={chatInput}
-                    stopVisible={convBusy}
+                    stopVisible={stopVisible}
                     inputDisabled={inputLocked}
                     onChange={setChatInput}
                     onSubmit={handleChatSubmit}
@@ -620,76 +710,4 @@ export default function App({ token, onLogout }: AppProps) {
             />
         </div>
     );
-}
-
-const EXTERNAL_ACTION_TYPES = new Set([
-    "terminal",
-    "app_control",
-    "file_write",
-    "file_read",
-    "open_url",
-    "browser",
-    "browser.open",
-    "browser.navigate",
-    "browser.search",
-    "browser.select_result",
-    "browser.extract_dom",
-    "browser.click",
-    "browser.type",
-    "browser_control",
-    "web_search",
-    "mouse_click",
-    "mouse_drag",
-    "keyboard_type",
-    "hotkey",
-    "screenshot",
-]);
-
-function isExternalActionType(type: string): boolean {
-    return EXTERNAL_ACTION_TYPES.has(type);
-}
-
-function formatProgressText(value: string): string {
-    const text = value
-        .replace(/\s*하는중\.{0,3}\s*$/u, "")
-        .replace(/\s*진행중\.{0,3}\s*$/u, "")
-        .trim();
-    return text ? `${text} 하는중...` : "";
-}
-
-function nextActionText(type: string, command: string, error: string): string {
-    if (/client action result timed out|result timed out|timed out/i.test(error)) {
-        if (type === "app_control") {
-            return `${command} 실행 결과가 제시간에 확인되지 않았습니다. 앱이 설치되어 있지 않다면 Chrome 또는 Safari로 다시 시도하세요.`;
-        }
-        return `외부 작업 결과가 제시간에 확인되지 않았습니다. 같은 작업을 다시 시도하거나 다른 방법을 선택하세요.`;
-    }
-    if (type === "app_control" && /invalid app_control target:\s*browser/i.test(error)) {
-        return "백엔드가 브라우저를 추상 앱 이름으로 보냈습니다. URL 열기는 open_url로, 앱 실행은 Chrome/Safari 같은 실제 앱 이름으로 보내야 합니다.";
-    }
-    if (type === "app_control" && /not found|찾을 수|없/i.test(error)) {
-        return `${command} 실행에 실패했습니다. 설치되어 있지 않은 앱이면 Chrome 또는 Safari로 다시 시도하세요.`;
-    }
-    if (type === "browser" || type === "browser_control" || type === "open_url" || type === "web_search") {
-        if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
-            return "Chrome 설정에서 View > Developer > Allow JavaScript from Apple Events를 켠 뒤 다시 시도하세요.";
-        }
-        if (/no active browser tab/i.test(error)) {
-            return "활성 브라우저 탭을 찾지 못했습니다. 검색 결과 탭을 앞으로 가져온 뒤 다시 시도하세요.";
-        }
-        return `브라우저 작업에 실패했습니다. 기본 브라우저 또는 다른 브라우저로 다시 시도하세요.`;
-    }
-    return `외부 작업에 실패했습니다. ${error}`;
-}
-
-const WAITING_MESSAGES = [
-    "잠시만요!",
-    "바로 확인할게요.",
-    "처리하고 있어요.",
-    "준비 중이에요.",
-    "곧 이어서 진행할게요.",
-];
-
-function waitingMessage(): string {
-    return WAITING_MESSAGES[Math.floor(Math.random() * WAITING_MESSAGES.length)];
 }

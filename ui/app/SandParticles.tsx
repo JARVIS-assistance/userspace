@@ -8,6 +8,7 @@ export type { ViewMode };
 
 interface Props {
     viewMode: ViewMode;
+    particleDensity?: number;
     onMinimizeDone?: () => void;
     onRestoreDone?: () => void;
     onSphereClick?: () => void;
@@ -114,8 +115,8 @@ export default function SandParticles(props: Props) {
         }
 
         resize();
-        wave.init(W, H);
-        sphere.init(W, H);
+        wave.init(W, H, propsRef.current.particleDensity);
+        sphere.init(W, H, propsRef.current.particleDensity);
         raf = requestAnimationFrame(draw);
 
         const onResize = () => resize();
@@ -125,7 +126,7 @@ export default function SandParticles(props: Props) {
             cancelAnimationFrame(raf);
             window.removeEventListener("resize", onResize);
         };
-    }, []);
+    }, [props.particleDensity]);
 
     const handleCanvasClick = () => {
         if (propsRef.current.viewMode === "sphere") {

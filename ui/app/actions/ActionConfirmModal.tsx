@@ -239,6 +239,15 @@ function humanSummary(action: PendingConfirm["action"]): string {
     ) {
         return `Open ${String(args.browser || "configured browser")}`;
     }
+    if (
+        (action.type === "app_control" && command === "open")
+        || action.type === "app.open"
+    ) {
+        return `Open application ${String(action.target || args.app || args.name || "")}`;
+    }
+    if (action.type === "keyboard_type" || action.type === "keyboard.type") {
+        return `Type text: ${String(args.text || action.payload || "")}`;
+    }
     return action.description || `${action.type} ${action.command || ""}`.trim();
 }
 
@@ -256,9 +265,15 @@ function riskLabel(action: PendingConfirm["action"]): string {
     const command = String(action.command || "").toLowerCase();
     if (
         action.type === "terminal"
+        || action.type === "terminal.run"
+        || action.type === "file.write"
         || action.type === "file_write"
+        || action.type === "mouse.click"
         || action.type === "mouse_click"
+        || action.type === "mouse.drag"
         || action.type === "mouse_drag"
+        || action.type === "keyboard.type"
+        || action.type === "keyboard.hotkey"
         || command.includes("click")
         || command.includes("type")
     ) {

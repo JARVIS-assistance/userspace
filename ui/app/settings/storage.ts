@@ -1,4 +1,9 @@
-import { DEFAULT_PERSONA, DEFAULT_TTS, type SettingsData } from "./types";
+import {
+    DEFAULT_PERSONA,
+    DEFAULT_TTS,
+    DEFAULT_VISUAL,
+    type SettingsData,
+} from "./types";
 
 const STORAGE_KEY = "jarvis_settings";
 
@@ -27,10 +32,16 @@ export function loadLocal(): SettingsData {
                 models: Array.isArray(parsed.models) ? parsed.models : [],
                 persona: { ...DEFAULT_PERSONA, ...(parsed.persona || {}) },
                 tts: { ...DEFAULT_TTS, ...(parsed.tts || {}) },
+                visual: { ...DEFAULT_VISUAL, ...(parsed.visual || {}) },
             };
         }
     } catch (_) {}
-    return { models: [], persona: DEFAULT_PERSONA, tts: DEFAULT_TTS };
+    return {
+        models: [],
+        persona: DEFAULT_PERSONA,
+        tts: DEFAULT_TTS,
+        visual: DEFAULT_VISUAL,
+    };
 }
 
 export function saveLocal(data: SettingsData) {

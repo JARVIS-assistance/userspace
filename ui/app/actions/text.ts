@@ -105,6 +105,10 @@ function displaySingleCompletedAction(result: Record<string, any>): string {
         return "검색을 완료했습니다.";
     }
 
+    if (type === "screenshot" || type === "screen.screenshot") {
+        return "현재 화면을 캡처했습니다.";
+    }
+
     if (type === "notify") {
         return "알림을 표시했습니다.";
     }
@@ -132,6 +136,9 @@ function firstLine(value: unknown): string {
 function formatActionError(error: string): string {
     if (/invalid app_control target:\s*browser/i.test(error)) {
         return "백엔드가 브라우저를 추상 앱 이름으로 보냈습니다. URL 열기는 open_url로, 앱 실행은 Chrome/Safari 같은 실제 앱 이름으로 보내야 합니다.";
+    }
+    if (/os_permission_missing|System Events|not authorized|accessibility|허용되지 않습니다|not allowed assistive access/i.test(error)) {
+        return "macOS 설정 > 개인정보 보호 및 보안 > 손쉬운 사용/자동화에서 JARVIS, Electron 또는 터미널 권한을 허용한 뒤 다시 시도하세요.";
     }
     if (/JavaScript from Apple Events|Apple Events/i.test(error)) {
         return "Chrome에서 보기 > 개발자 > Apple Events의 JavaScript 허용을 켠 뒤 다시 시도하세요.";

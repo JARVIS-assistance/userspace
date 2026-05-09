@@ -35,9 +35,25 @@ async def _run_script(script: str) -> None:
     )
     _, err = await proc.communicate()
     if proc.returncode != 0:
+        message = err.decode(errors="replace")[:300]
+        reason = _osascript_failure_reason(message)
         raise HandlerError(
-            f"physical input failed rc={proc.returncode}: {err.decode(errors='replace')[:300]}"
+            f"physical input failed rc={proc.returncode}: {message}",
+            output={"reason": reason},
         )
+
+
+def _osascript_failure_reason(message: str) -> str:
+    lowered = message.casefold()
+    if (
+        "system events" in lowered
+        or "not authorized" in lowered
+        or "accessibility" in lowered
+        or "연결이 유효하지 않습니다" in lowered
+        or "not allowed assistive access" in lowered
+    ):
+        return "os_permission_missing"
+    return "execution_failed"
 
 
 def make_keyboard_type(enabled: bool, max_chars: int = 4000):

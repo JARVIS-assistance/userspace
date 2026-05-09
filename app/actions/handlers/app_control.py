@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import Any
 
 from app.actions.handlers.base import HandlerError
@@ -19,7 +20,6 @@ ABSTRACT_APP_TARGETS = {
     "default_browser",
     "web_browser",
 }
-
 
 def make_app_control(enabled: bool):
     async def app_control(action: ClientAction) -> dict[str, Any]:
@@ -84,7 +84,45 @@ def _normalize_command_and_app(action: ClientAction) -> tuple[str, str]:
         or str((action.args or {}).get("app_name") or "")
         or str((action.args or {}).get("application") or "")
     ).strip()
-    return command, app_name
+    return command, _resolve_installed_app_name(app_name)
+
+
+def _resolve_installed_app_name(app_name: str) -> str:
+    key = _app_name_key(app_name)
+    if not key:
+        return app_name
+    for installed_name in _installed_application_names():
+        if _app_name_key(installed_name) == key:
+            return installed_name
+    return app_name
+
+
+def _app_name_key(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
+
+
+def _installed_application_names() -> list[str]:
+    if sys.platform != "darwin":
+        return []
+    names: list[str] = []
+    for directory in _application_directories():
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.suffix.lower() == ".app":
+                names.append(child.stem)
+    return list(dict.fromkeys(name for name in names if name.strip()))
+
+
+def _application_directories() -> list[Path]:
+    return [
+        Path("/Applications"),
+        Path.home() / "Applications",
+        Path("/System/Applications"),
+        Path("/System/Applications/Utilities"),
+    ]
 
 
 def _command_from_type(action_type: str) -> str | None:

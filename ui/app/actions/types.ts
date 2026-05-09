@@ -1,10 +1,14 @@
 // Backend OpenAPI ClientAction과 동일 (subset)
 export type ClientActionType =
-    | "terminal" | "app_control" | "file_write" | "file_read"
+    | "terminal" | "terminal.run"
+    | "app_control" | "app.open" | "app.focus" | "app.close"
+    | "file.write" | "file_read" | "file_write"
     | "open_url" | "browser" | "browser.open" | "browser.navigate" | "browser.search" | "browser.select_result"
     | "browser.extract_dom" | "browser.click" | "browser.type"
     | "browser_control" | "web_search" | "notify" | "clipboard"
-    | "mouse_click" | "mouse_drag" | "keyboard_type" | "hotkey" | "screenshot";
+    | "mouse.click" | "mouse.drag" | "mouse_click" | "mouse_drag"
+    | "keyboard.type" | "keyboard.hotkey" | "keyboard_type" | "hotkey"
+    | "screen.screenshot" | "screenshot";
 
 export interface ClientAction {
     type: ClientActionType;

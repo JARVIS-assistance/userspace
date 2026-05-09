@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Callable
 
 from app.models.messages import EventEnvelope
-from app.realtime.ollama_client import OllamaClient, OllamaConfig, StreamChunk
+from app.realtime.ollama_client import OllamaClient, OllamaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,11 @@ class ConversationManager:
                 }:
                     payload = dict(event.payload)
                     payload.setdefault("timestamp", int(time.time() * 1000))
+                    if (
+                        event.type == "conversation.action_intent"
+                        and payload.get("should_act") is True
+                    ):
+                        self._current_response = ""
                     yield EventEnvelope(type=event.type, payload=payload)
                     continue
 

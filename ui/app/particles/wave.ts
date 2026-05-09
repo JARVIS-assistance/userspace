@@ -2,9 +2,11 @@ import { sharedAudioRef } from "../audio/sharedAudioRef";
 import { COLORS, paletteFor } from "./colors";
 import type { Particle } from "./types";
 
-const BAR_COUNT = 48;
-const PER_BAR = 38;
-const AMBIENT = 350;
+const DEFAULT_BAR_COUNT = 48;
+const DEFAULT_PER_BAR = 38;
+const DEFAULT_AMBIENT = 350;
+const MIN_DENSITY = 0.25;
+const MAX_DENSITY = 1;
 
 export class WaveLayer {
     particles: Particle[] = [];
@@ -13,17 +15,21 @@ export class WaveLayer {
     private colorB: number[] = [];
     private colorsInit = false;
     private speakingLevel = 0;
+    private barCount = DEFAULT_BAR_COUNT;
+    private perBar = DEFAULT_PER_BAR;
+    private ambient = DEFAULT_AMBIENT;
 
-    init(W: number, H: number) {
+    init(W: number, H: number, density = MAX_DENSITY) {
+        this.configureDensity(density);
         this.particles = [];
         this.colorsInit = false;
         const cy = H * 0.5;
         const tw = W * 0.7;
         const sx = W * 0.15;
-        const cw = tw / BAR_COUNT;
-        for (let b = 0; b < BAR_COUNT; b++) {
+        const cw = tw / this.barCount;
+        for (let b = 0; b < this.barCount; b++) {
             const bx = sx + cw * (b + 0.5);
-            for (let i = 0; i < PER_BAR; i++) {
+            for (let i = 0; i < this.perBar; i++) {
                 this.particles.push({
                     x: bx + (Math.random() - 0.5) * 80,
                     y: cy + (Math.random() - 0.5) * 80,
@@ -36,11 +42,11 @@ export class WaveLayer {
                     a: 0.6 + Math.random() * 0.4,
                     ph: Math.random() * Math.PI * 2,
                     bar: b,
-                    bp: i / (PER_BAR - 1),
+                    bp: i / (this.perBar - 1),
                 });
             }
         }
-        for (let i = 0; i < AMBIENT; i++) {
+        for (let i = 0; i < this.ambient; i++) {
             this.particles.push({
                 x: Math.random() * W,
                 y: Math.random() * H,
@@ -58,11 +64,20 @@ export class WaveLayer {
         }
     }
 
+    private configureDensity(value: number) {
+        const density = Number.isFinite(value)
+            ? Math.min(MAX_DENSITY, Math.max(MIN_DENSITY, value))
+            : MAX_DENSITY;
+        this.barCount = Math.max(20, Math.round(DEFAULT_BAR_COUNT * density));
+        this.perBar = Math.max(12, Math.round(DEFAULT_PER_BAR * density));
+        this.ambient = Math.max(80, Math.round(DEFAULT_AMBIENT * density));
+    }
+
     updateTargets(now: number, W: number, H: number) {
         const centerY = H * 0.5;
         const tw = W * 0.7;
         const sx = W * 0.15;
-        const cw = tw / BAR_COUNT;
+        const cw = tw / this.barCount;
         const audio = sharedAudioRef.current;
         const active = sharedAudioRef.active;
         const isSpeaking = sharedAudioRef.state === "speaking";
@@ -88,7 +103,7 @@ export class WaveLayer {
             const bx = sx + cw * (p.bar + 0.5);
             let bH: number;
             if (active && audio && audio.length > 0) {
-                const bin = ((p.bar / BAR_COUNT) * audio.length) | 0;
+                const bin = ((p.bar / this.barCount) * audio.length) | 0;
                 bH = H * 0.05 + (audio[bin] / 255) * H * 0.35;
                 bH += Math.sin(now * 3 + p.bar * 0.2) * H * 0.01;
             } else if (isSpeaking && this.speakingLevel > 0.01) {

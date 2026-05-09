@@ -7,11 +7,20 @@ export const sharedAudioRef = {
     speakingPulse: 0,
 };
 
-export function float32ToInt16Array(f32: Float32Array): number[] {
-    const out: number[] = new Array(f32.length);
+export function float32ToPcm16Base64(f32: Float32Array): string {
+    const bytes = new Uint8Array(f32.length * 2);
+    const view = new DataView(bytes.buffer);
     for (let i = 0; i < f32.length; i++) {
-        const s = Math.max(-1, Math.min(1, f32[i]));
-        out[i] = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+        const sample = Math.max(-1, Math.min(1, f32[i]));
+        const value = sample < 0 ? sample * 32768 : sample * 32767;
+        view.setInt16(i * 2, value, true);
     }
-    return out;
+
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
 }

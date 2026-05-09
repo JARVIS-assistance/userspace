@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import json
 
 from app.realtime.sse_parser import parse_conversation_stream
 
@@ -95,6 +96,37 @@ class SSEParserTests(unittest.TestCase):
 
         self.assertEqual(events[0].type, "conversation.action_intent")
         self.assertFalse(events[0].payload["should_act"])
+
+    def test_passes_plan_step_events(self) -> None:
+        async def run():
+            payload = json.dumps(
+                {
+                    "id": "step1",
+                    "status": "in_progress",
+                    "title": "요청 판별",
+                    "description": "요청을 분류",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            response = _FakeResponse(
+                [
+                    b"event: plan_step\n",
+                    b"data: " + payload + b"\n",
+                    b"\n",
+                ]
+            )
+            return [
+                event
+                async for event in parse_conversation_stream(
+                    response, is_cancelled=lambda: False
+                )
+            ]
+
+        events = asyncio.run(run())
+
+        self.assertEqual(events[0].type, "conversation.plan_step")
+        self.assertEqual(events[0].payload["id"], "step1")
+        self.assertEqual(events[0].payload["status"], "in_progress")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from app.actions.handlers.base import HandlerError
 from app.actions.handlers.app_control import _normalize_command_and_app
@@ -24,20 +25,24 @@ class AppControlTests(unittest.TestCase):
         self.assertEqual(command, "open")
         self.assertEqual(app, "Google Chrome")
 
-    def test_app_target_is_not_alias_mapped_locally(self) -> None:
-        command, app = _normalize_command_and_app(
-            ClientAction(
-                type="app_control",
-                command="open",
-                target="sublime_text",
-                payload=None,
-                args={},
-                description="Sublime 실행",
-                requires_confirm=False,
+    def test_app_target_separator_alias_maps_to_installed_app_name(self) -> None:
+        with patch(
+            "app.actions.handlers.app_control._installed_application_names",
+            return_value=["Sample App"],
+        ):
+            command, app = _normalize_command_and_app(
+                ClientAction(
+                    type="app_control",
+                    command="open",
+                    target="sample_app",
+                    payload=None,
+                    args={},
+                    description="앱 실행",
+                    requires_confirm=False,
+                )
             )
-        )
         self.assertEqual(command, "open")
-        self.assertEqual(app, "sublime_text")
+        self.assertEqual(app, "Sample App")
 
     def test_legacy_default_browser_command_is_not_reinterpreted(self) -> None:
         command, app = _normalize_command_and_app(
