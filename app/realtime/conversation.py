@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Callable
 
 from app.models.messages import EventEnvelope
-from app.realtime.ollama_client import OllamaClient, OllamaConfig, StreamChunk
+from app.realtime.ollama_client import OllamaClient, OllamaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,7 @@ class ConversationManager:
         self._barge_in_triggered = False
         self._current_response = ""
         speaking_started = False
+        final_done_payload: dict[str, Any] | None = None
         
         try:
             async for event in self.ollama.stream_conversation(
@@ -229,9 +230,18 @@ class ConversationManager:
                     "conversation.thinking",
                     "conversation.plan_step",
                     "conversation.error",
+                    "conversation.action_intent",
+                    "conversation.action_dispatch",
+                    "conversation.action_result",
+                    "conversation.actions",
                 }:
                     payload = dict(event.payload)
                     payload.setdefault("timestamp", int(time.time() * 1000))
+                    if (
+                        event.type == "conversation.action_intent"
+                        and payload.get("should_act") is True
+                    ):
+                        self._current_response = ""
                     yield EventEnvelope(type=event.type, payload=payload)
                     continue
 
@@ -252,10 +262,18 @@ class ConversationManager:
                     continue
 
                 if event.type == "conversation.done":
-                    done_text = str(event.payload.get("text", "")).strip()
+                    final_done_payload = dict(event.payload)
+                    done_text = str(final_done_payload.get("text", ""))
                     if done_text and not self._current_response.strip():
                         self._current_response = done_text
-                    break
+                    elif (
+                        done_text
+                        and self._current_response
+                        and done_text.endswith(self._current_response)
+                        and len(done_text) > len(self._current_response)
+                    ):
+                        self._current_response = done_text
+                    continue
         
         except asyncio.CancelledError:
             logger.info("LLM generation cancelled")
@@ -267,20 +285,20 @@ class ConversationManager:
             )
         
         # If not interrupted, finalize response
-        if not self._barge_in_triggered and self._current_response.strip():
-            # Add to history
-            self.context.add_turn("assistant", self._current_response)
-            
-            # Emit done event
+        if not self._barge_in_triggered and (
+            self._current_response.strip() or final_done_payload is not None
+        ):
+            if self._current_response.strip():
+                self.context.add_turn("assistant", self._current_response)
+
+            payload = dict(final_done_payload or {})
+            payload["text"] = self._current_response
+            payload["timestamp"] = int(time.time() * 1000)
             yield EventEnvelope(
                 type="conversation.done",
-                payload={
-                    "text": self._current_response,
-                    "timestamp": int(time.time() * 1000),
-                },
+                payload=payload,
             )
-            
-            # Return to IDLE (will go back to LISTENING if STT detects speech)
+
             yield self._set_state(ConversationState.IDLE)
         
         self._current_response = ""
@@ -317,6 +335,47 @@ class ConversationManager:
         self._pending_user_text = ""
         self._barge_in_triggered = False
         return self._set_state(ConversationState.IDLE)
+
+    async def cancel(self) -> list[EventEnvelope]:
+        """User-initiated cancel — 현재 LLM 추론/응답을 중단하고 IDLE로 복귀.
+
+        - reset()과 달리 conversation history는 보존
+        - 진행 중이던 partial response는 history에 [cancelled] 표시로 저장
+        - 진행 중인 작업이 없으면 was_active=False로 응답
+        """
+        was_active = self.state in (
+            ConversationState.PROCESSING,
+            ConversationState.SPEAKING,
+        )
+        events: list[EventEnvelope] = []
+
+        if was_active:
+            self._barge_in_triggered = True
+            self.ollama.cancel()
+
+            if self._streaming_task and not self._streaming_task.done():
+                self._streaming_task.cancel()
+                try:
+                    await self._streaming_task
+                except asyncio.CancelledError:
+                    pass
+
+            if self._current_response.strip():
+                self.context.add_turn(
+                    "assistant", self._current_response + " [cancelled]"
+                )
+            self._current_response = ""
+
+        events.append(EventEnvelope(
+            type="conversation.cancelled",
+            payload={
+                "was_active": was_active,
+                "timestamp": int(time.time() * 1000),
+            },
+        ))
+        if was_active:
+            events.append(self._set_state(ConversationState.IDLE))
+        return events
 
     async def close(self) -> None:
         """Cleanup resources."""

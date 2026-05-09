@@ -1,19 +1,61 @@
-const { app, BrowserWindow, ipcMain, session, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, globalShortcut, systemPreferences } = require('electron');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const USERSPACE_HOST = process.env.USERSPACE_HOST || '127.0.0.1';
 const USERSPACE_PORT = Number(process.env.USERSPACE_PORT || '8765');
 const AUTH_API_BASE = (process.env.AUTH_API_BASE || 'http://127.0.0.1:8001').replace(/\/+$/, '');
 const USERSPACE_WS_URL = process.env.USERSPACE_WS_URL || `ws://${USERSPACE_HOST}:${USERSPACE_PORT}/ws`;
+const USERSPACE_WS_AUTH_DISABLED =
+  String(process.env.JARVIS_USERSPACE_AUTH_DISABLED || '').toLowerCase();
+const USERSPACE_WS_AUTH_DISABLED_BOOL =
+  USERSPACE_WS_AUTH_DISABLED === '1' || USERSPACE_WS_AUTH_DISABLED === 'true' || USERSPACE_WS_AUTH_DISABLED === 'yes' || USERSPACE_WS_AUTH_DISABLED === 'on';
+
+app.setName('JARVIS Userspace');
+app.setPath('userData', path.join(app.getPath('appData'), 'JARVIS Userspace'));
 
 const SPHERE_SIZE = 100;
 const SPHERE_MARGIN = 24;
 const SPHERE_WINDOW_W = 560; // wide enough for speech bubble
 const SPHERE_WINDOW_H = 160;
 let mainWindow = null;
-let savedBounds = null;
 let lastSphereBounds = null; // 아이콘 모드의 마지막 위치 저장
 let isSphereMode = false;
+
+function requestMacOSActionPermissions() {
+  if (process.platform !== 'darwin') return;
+
+  try {
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+    process.stdout.write(`[permissions] accessibility trusted=${trusted}\n`);
+  } catch (err) {
+    process.stderr.write(`[permissions] accessibility prompt failed: ${String(err)}\n`);
+  }
+
+  const probe = spawn('osascript', [
+    '-e',
+    'tell application "System Events" to get name of first process',
+  ], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+
+  let stderr = '';
+  probe.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  probe.on('close', (code) => {
+    if (code === 0) {
+      process.stdout.write('[permissions] automation probe succeeded\n');
+      return;
+    }
+    process.stderr.write(`[permissions] automation probe failed rc=${code}: ${stderr.trim()}\n`);
+  });
+  probe.on('error', (err) => {
+    process.stderr.write(`[permissions] automation probe error: ${String(err)}\n`);
+  });
+}
 
 // ── Window ─────────────────────────────────────────────
 function createWindow() {
@@ -28,6 +70,7 @@ function createWindow() {
     hasShadow: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      partition: 'persist:jarvis-userspace',
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -73,17 +116,17 @@ function createWindow() {
 function transitionToSphere() {
   if (!mainWindow || isSphereMode) return;
 
-  savedBounds = mainWindow.getBounds();
   isSphereMode = true;
 
-  const display = screen.getDisplayNearestPoint(
-    screen.getCursorScreenPoint()
-  );
-  const { width: screenW } = display.workArea;
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
+  const workArea = display.workArea;
 
   mainWindow.setAlwaysOnTop(true, 'floating');
   mainWindow.setResizable(false);
   mainWindow.setHasShadow(false);
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+  }
 
   if (lastSphereBounds) {
     // 마지막으로 드래그해서 놓은 위치가 있으면 그 위치로 이동
@@ -91,8 +134,8 @@ function transitionToSphere() {
   } else {
     // 없으면 기본 위치(우측 상단)로 이동
     mainWindow.setBounds({
-      x: screenW - SPHERE_WINDOW_W - SPHERE_MARGIN,
-      y: SPHERE_MARGIN,
+      x: workArea.x + workArea.width - SPHERE_WINDOW_W - SPHERE_MARGIN,
+      y: workArea.y + SPHERE_MARGIN,
       width: SPHERE_WINDOW_W,
       height: SPHERE_WINDOW_H,
     }, true);
@@ -115,13 +158,7 @@ function restoreFromSphere(text) {
   mainWindow.setAlwaysOnTop(false);
   mainWindow.setResizable(true);
   mainWindow.setHasShadow(true);
-
-  if (savedBounds) {
-    mainWindow.setBounds(savedBounds, true);
-    savedBounds = null;
-  } else {
-    mainWindow.maximize();
-  }
+  mainWindow.maximize();
 
   // Wait for window resize to settle, then tell renderer to fade in waveform
   setTimeout(() => {
@@ -137,6 +174,7 @@ ipcMain.handle('userspace:get-config', async () => {
     baseUrl: `http://${USERSPACE_HOST}:${USERSPACE_PORT}`,
     authApiBase: AUTH_API_BASE,
     wsUrl: USERSPACE_WS_URL,
+    authDisabled: USERSPACE_WS_AUTH_DISABLED_BOOL,
   };
 });
 
@@ -154,11 +192,203 @@ ipcMain.handle('userspace:health', async () => {
   }
 });
 
+ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
+  const provider = String(payload.provider || '');
+  const text = String(payload.text || '').trim();
+  const apiKey = String(payload.apiKey || '').trim();
+  const voiceId = String(payload.voiceId || '').trim();
+  const model = String(payload.model || '').trim();
+
+  if (!text) return { ok: false, error: 'missing text' };
+  if (!['chatterbox', 'vibevoice'].includes(provider) && !apiKey) return { ok: false, error: 'missing api key' };
+
+  try {
+    let res;
+    if (provider === 'chatterbox') {
+      return await synthesizeChatterbox({
+        text,
+        model: model || 'multilingual',
+        language: String(payload.language || 'ko').trim() || 'ko',
+        audioPromptPath: String(payload.audioPromptPath || '').trim(),
+        exaggeration: Number(payload.exaggeration ?? 0.5),
+        cfgWeight: Number(payload.cfgWeight ?? 0.5),
+      });
+    } else if (provider === 'vibevoice') {
+      return await synthesizeVibeVoice({
+        text,
+        model: model || 'microsoft/VibeVoice-Realtime-0.5B',
+        voiceId: voiceId || 'Carter',
+        voicePresetPath: String(payload.audioPromptPath || '').trim(),
+        cfgScale: Number(payload.cfgWeight ?? 1.5),
+      });
+    } else if (provider === 'elevenlabs') {
+      const voice = voiceId || 'JBFqnCBsd6RMkjVDRZzb';
+      res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}`, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text,
+          model_id: model || 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.45,
+            similarity_boost: 0.8,
+            style: 0.25,
+            use_speaker_boost: true,
+          },
+        }),
+      });
+    } else if (provider === 'openai') {
+      res = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model || 'gpt-4o-mini-tts',
+          voice: voiceId || 'marin',
+          input: text,
+          response_format: 'mp3',
+        }),
+      });
+    } else {
+      return { ok: false, error: `unsupported provider: ${provider}` };
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return {
+        ok: false,
+        status: res.status,
+        error: body.slice(0, 500) || `HTTP ${res.status}`,
+      };
+    }
+
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return {
+      ok: true,
+      mimeType: res.headers.get('content-type') || 'audio/mpeg',
+      audioBase64: bytes.toString('base64'),
+    };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+});
+
+function synthesizeVibeVoice(options) {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, '..', 'scripts', 'vibevoice_realtime_tts.py');
+    const outputPath = path.join(os.tmpdir(), `jarvis-vibevoice-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
+    const cacheRoot = path.join(__dirname, '..', '.cache');
+    const python = process.env.VIBEVOICE_PYTHON || process.env.PYTHON || 'python3';
+    const child = spawn(python, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        HF_HOME: process.env.HF_HOME || path.join(cacheRoot, 'huggingface'),
+        TORCH_HOME: process.env.TORCH_HOME || path.join(cacheRoot, 'torch'),
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      resolve({ ok: false, error: String(error) });
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({
+          ok: false,
+          error: stderr.trim() || stdout.trim() || `VibeVoice exited with ${code}`,
+        });
+        return;
+      }
+      try {
+        const bytes = fs.readFileSync(outputPath);
+        fs.unlink(outputPath, () => {});
+        resolve({
+          ok: true,
+          mimeType: 'audio/wav',
+          audioBase64: bytes.toString('base64'),
+        });
+      } catch (error) {
+        resolve({
+          ok: false,
+          error: `${String(error)} ${stderr.trim()}`.trim(),
+        });
+      }
+    });
+    child.stdin.end(JSON.stringify({ ...options, outputPath }));
+  });
+}
+
+function synthesizeChatterbox(options) {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, '..', 'scripts', 'chatterbox_tts.py');
+    const outputPath = path.join(os.tmpdir(), `jarvis-chatterbox-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
+    const cacheRoot = path.join(__dirname, '..', '.cache');
+    const python = process.env.CHATTERBOX_PYTHON || process.env.PYTHON || 'python3';
+    const child = spawn(python, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        HF_HOME: process.env.HF_HOME || path.join(cacheRoot, 'huggingface'),
+        NUMBA_CACHE_DIR: process.env.NUMBA_CACHE_DIR || path.join(cacheRoot, 'numba'),
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      resolve({ ok: false, error: String(error) });
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({
+          ok: false,
+          error: stderr.trim() || stdout.trim() || `Chatterbox exited with ${code}`,
+        });
+        return;
+      }
+      try {
+        const bytes = fs.readFileSync(outputPath);
+        fs.unlink(outputPath, () => {});
+        resolve({
+          ok: true,
+          mimeType: 'audio/wav',
+          audioBase64: bytes.toString('base64'),
+        });
+      } catch (error) {
+        resolve({
+          ok: false,
+          error: `${String(error)} ${stderr.trim()}`.trim(),
+        });
+      }
+    });
+    child.stdin.end(JSON.stringify({ ...options, outputPath }));
+  });
+}
+
 // Window control IPCs
 ipcMain.on('window:minimize', () => {
   if (mainWindow) {
     mainWindow.webContents.send('window:minimize-to-sphere');
   }
+});
+
+ipcMain.handle('window:minimize-now', async () => {
+  transitionToSphere();
+  return true;
 });
 
 ipcMain.on('window:close', () => {
@@ -197,6 +427,8 @@ ipcMain.handle('window:get-bounds', async () => {
 
 // ── App lifecycle ──────────────────────────────────────
 app.whenReady().then(() => {
+  requestMacOSActionPermissions();
+
   // Allow microphone access for STT
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     if (permission === 'media' || permission === 'microphone') {

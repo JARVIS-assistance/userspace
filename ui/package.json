@@ -1,5 +1,6 @@
 {
-  "name": "jarvis-template-electron",
+  "name": "jarvis-userspace",
+  "productName": "JARVIS Userspace",
   "version": "1.0.0",
   "private": true,
   "main": "main.js",

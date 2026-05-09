@@ -1,10 +1,13 @@
 from app.stt.engine import (
-    LocalWhisperEngine,
-    RealTimePartialSTT,
     STTEngine,
     STTEngineUnavailableError,
+    StreamingTranscription,
+    Transcription,
+    TranscriptionResult,
 )
+from app.stt.realtime import RealTimePartialSTT
 from app.stt.session import STTSession
+from app.stt.whisper_engine import LocalWhisperEngine
 
 __all__ = [
     "STTEngine",
@@ -12,4 +15,7 @@ __all__ = [
     "LocalWhisperEngine",
     "STTEngineUnavailableError",
     "STTSession",
+    "Transcription",
+    "StreamingTranscription",
+    "TranscriptionResult",
 ]
