@@ -26,6 +26,7 @@ EventType = Literal[
     "conversation.done",
     "conversation.barge_in",
     "conversation.speech_end",
+    "conversation.greeting",
     "conversation.classification",
     "conversation.thinking",
     "conversation.plan_step",

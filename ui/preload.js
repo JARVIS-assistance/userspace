@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld('jarvisBridge', {
   getUserspaceConfig: () => ipcRenderer.invoke('userspace:get-config'),
   healthcheckUserspace: () => ipcRenderer.invoke('userspace:health'),
   synthesizeTts: (payload) => ipcRenderer.invoke('tts:synthesize', payload),
+  synthesizeTtsStream: (payload) => ipcRenderer.invoke('tts:synthesize-stream', payload),
+  cancelTtsStream: (requestId) => ipcRenderer.send('tts:stream-cancel', requestId),
+  onTtsStreamEvent: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('tts:stream-event', handler);
+    return () => ipcRenderer.removeListener('tts:stream-event', handler);
+  },
 
   // Window controls
   minimizeWindow: () => ipcRenderer.send('window:minimize'),

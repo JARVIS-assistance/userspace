@@ -21,13 +21,26 @@ export interface Persona {
 
 export interface TtsConfig {
     enabled: boolean;
-    provider: "browser" | "chatterbox" | "vibevoice" | "elevenlabs" | "openai";
+    provider: "browser" | "chatterbox" | "vibevoice" | "gpt-sovits" | "elevenlabs" | "openai";
     voiceURI: string;
     apiKey: string;
     voiceId: string;
     model: string;
     language: string;
     audioPromptPath: string;
+    gptSovitsRepoPath: string;
+    gptSovitsPythonPath: string;
+    gptSovitsHost: string;
+    gptSovitsPort: number;
+    gptSovitsConfigPath: string;
+    gptSovitsPromptText: string;
+    gptSovitsTextLanguage: string;
+    gptSovitsPromptLanguage: string;
+    gptSovitsStreamingMode: number;
+    gptSovitsSpeedFactor: number;
+    gptSovitsTopK: number;
+    gptSovitsTopP: number;
+    gptSovitsTemperature: number;
     exaggeration: number;
     cfgWeight: number;
     rate: number;
@@ -39,11 +52,18 @@ export interface VisualConfig {
     particleDensity: number;
 }
 
+export interface CameraConfig {
+    deviceId: string;
+    label: string;
+    preferPhysical: boolean;
+}
+
 export interface SettingsData {
     models: ModelConfig[];
     persona: Persona;
     tts: TtsConfig;
     visual: VisualConfig;
+    camera: CameraConfig;
 }
 
 export const PERSONA_ICONS = [
@@ -74,6 +94,19 @@ export const DEFAULT_TTS: TtsConfig = {
     model: "microsoft/VibeVoice-Realtime-0.5B",
     language: "ko",
     audioPromptPath: "",
+    gptSovitsRepoPath: "",
+    gptSovitsPythonPath: "",
+    gptSovitsHost: "127.0.0.1",
+    gptSovitsPort: 9880,
+    gptSovitsConfigPath: "GPT_SoVITS/configs/tts_infer.yaml",
+    gptSovitsPromptText: "",
+    gptSovitsTextLanguage: "ko",
+    gptSovitsPromptLanguage: "ko",
+    gptSovitsStreamingMode: 3,
+    gptSovitsSpeedFactor: 1,
+    gptSovitsTopK: 15,
+    gptSovitsTopP: 1,
+    gptSovitsTemperature: 1,
     exaggeration: 0.5,
     cfgWeight: 0.5,
     rate: 1,
@@ -83,6 +116,12 @@ export const DEFAULT_TTS: TtsConfig = {
 
 export const DEFAULT_VISUAL: VisualConfig = {
     particleDensity: 1,
+};
+
+export const DEFAULT_CAMERA: CameraConfig = {
+    deviceId: "",
+    label: "",
+    preferPhysical: true,
 };
 
 export const EMPTY_MODEL: ModelConfig = {
