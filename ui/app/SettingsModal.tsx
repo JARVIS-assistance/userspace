@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import ActionsTab from "./settings/ActionsTab";
 import type { ActionsConfig } from "./settings/actionsConfig";
+import CameraTab from "./settings/CameraTab";
 import ModelTab from "./settings/ModelTab";
 import PersonaTab from "./settings/PersonaTab";
 import TtsTab from "./settings/TtsTab";
@@ -18,9 +19,10 @@ import type {
     SettingsData,
     TtsConfig,
     VisualConfig,
+    CameraConfig,
 } from "./settings/types";
 
-type TabKey = "model" | "persona" | "visual" | "tts" | "actions";
+type TabKey = "model" | "persona" | "tts" | "camera" | "visual" | "actions";
 
 interface Props {
     open: boolean;
@@ -153,6 +155,20 @@ export default function SettingsModal({
         });
     }, [onSettingsChange]);
 
+    const setCamera = useCallback((u: Partial<CameraConfig>) => {
+        setData((prev) => {
+            const next = { ...prev, camera: { ...prev.camera, ...u } };
+            saveLocal(next);
+            window.dispatchEvent(
+                new CustomEvent("jarvis-camera-settings-changed", {
+                    detail: next.camera,
+                }),
+            );
+            onSettingsChange?.(next);
+            return next;
+        });
+    }, [onSettingsChange]);
+
     if (!open) return null;
 
     return (
@@ -183,6 +199,12 @@ export default function SettingsModal({
                         onClick={() => setTab("tts")}
                     >
                         TTS
+                    </button>
+                    <button
+                        style={css.tab(tab === "camera")}
+                        onClick={() => setTab("camera")}
+                    >
+                        CAMERA
                     </button>
                     <button
                         style={css.tab(tab === "visual")}
@@ -216,6 +238,10 @@ export default function SettingsModal({
 
                 {tab === "tts" && (
                     <TtsTab config={data.tts} onChange={setTts} />
+                )}
+
+                {tab === "camera" && (
+                    <CameraTab config={data.camera} onChange={setCamera} />
                 )}
 
                 {tab === "visual" && (

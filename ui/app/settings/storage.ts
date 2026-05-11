@@ -1,4 +1,5 @@
 import {
+    DEFAULT_CAMERA,
     DEFAULT_PERSONA,
     DEFAULT_TTS,
     DEFAULT_VISUAL,
@@ -33,6 +34,7 @@ export function loadLocal(): SettingsData {
                 persona: { ...DEFAULT_PERSONA, ...(parsed.persona || {}) },
                 tts: { ...DEFAULT_TTS, ...(parsed.tts || {}) },
                 visual: { ...DEFAULT_VISUAL, ...(parsed.visual || {}) },
+                camera: { ...DEFAULT_CAMERA, ...(parsed.camera || {}) },
             };
         }
     } catch (_) {}
@@ -41,6 +43,7 @@ export function loadLocal(): SettingsData {
         persona: DEFAULT_PERSONA,
         tts: DEFAULT_TTS,
         visual: DEFAULT_VISUAL,
+        camera: DEFAULT_CAMERA,
     };
 }
 

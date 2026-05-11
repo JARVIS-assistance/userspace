@@ -263,6 +263,12 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                     start_conversation(conversation.handle_stt_final(text))
                 continue
 
+            if event_type == "conversation.greeting":
+                print("[CONV] initial greeting requested", flush=True)
+                if conversation.state == ConversationState.IDLE:
+                    start_conversation(conversation.handle_initial_greeting())
+                continue
+
             if event_type == "action.request":
                 name = str(payload.get("name", ""))
                 args = payload.get("args", {})

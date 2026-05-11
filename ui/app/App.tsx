@@ -54,6 +54,7 @@ export default function App({ token, onLogout }: AppProps) {
     const chatInputRef = useRef<HTMLInputElement>(null);
     const autoMinimizeActionRef = useRef<string | null>(null);
     const activePlanStepIdRef = useRef<string | null>(null);
+    const greetingRequestedRef = useRef(false);
 
     // ── Actions config (settings 탭) ──
     const [actionsConfig, setActionsConfig] = useState<ActionsConfig | null>(null);
@@ -410,7 +411,7 @@ export default function App({ token, onLogout }: AppProps) {
         }
     }, [actionState, applyActionUiSideEffects, assistantTts]);
 
-    const { sendEvent, wsRef } = useJarvisSocket({
+    const { status: wsStatus, sendEvent, wsRef } = useJarvisSocket({
         token,
         onMessage: handleMessage,
     });
@@ -419,6 +420,12 @@ export default function App({ token, onLogout }: AppProps) {
     useEffect(() => {
         sendEventRef.current = sendEvent;
     }, [sendEvent]);
+
+    useEffect(() => {
+        if (wsStatus !== "connected" || greetingRequestedRef.current) return;
+        greetingRequestedRef.current = true;
+        sendEvent("conversation.greeting", {});
+    }, [sendEvent, wsStatus]);
 
     const mic = useMicCapture({ sendEvent, wsRef });
 

@@ -113,6 +113,23 @@ class ConversationManager:
             },
         )
 
+    async def handle_initial_greeting(self) -> AsyncIterator[EventEnvelope]:
+        """Generate an assistant greeting without requiring a user message."""
+        if self.state in (ConversationState.PROCESSING, ConversationState.SPEAKING):
+            return
+
+        prompt = (
+            "사용자가 JARVIS 앱에 처음 접근했습니다. "
+            "사용자를 반기는 짧고 자연스러운 한국어 인삿말을 생성하세요. "
+            "한 문장으로 말하고, 도움을 요청할 수 있다는 느낌만 전하세요. "
+            "도구 실행이나 외부 작업은 하지 마세요."
+        )
+
+        yield self._set_state(ConversationState.PROCESSING)
+
+        async for event in self._generate_response(prompt):
+            yield event
+
     async def handle_stt_partial(self, text: str) -> list[EventEnvelope]:
         """
         Handle partial STT result.

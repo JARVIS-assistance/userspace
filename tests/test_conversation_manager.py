@@ -126,6 +126,24 @@ class ConversationManagerTests(unittest.TestCase):
 
         self.assertEqual(done.payload["text"], "잠시만요!요청하신 작업 시작할게요")
 
+    def test_initial_greeting_generates_without_user_turn(self) -> None:
+        async def run():
+            manager = ConversationManager()
+            manager.ollama = _FakeOllama()  # type: ignore[assignment]
+            events = [
+                event async for event in manager.handle_initial_greeting()
+            ]
+            return manager, events
+
+        manager, events = asyncio.run(run())
+        types = [event.type for event in events]
+        done = next(event for event in events if event.type == "conversation.done")
+
+        self.assertNotIn("conversation.user", types)
+        self.assertEqual(done.payload["text"], "안녕하세요!")
+        self.assertEqual(len(manager.context.history), 1)
+        self.assertEqual(manager.context.history[0].role, "assistant")
+
 
 if __name__ == "__main__":
     unittest.main()
