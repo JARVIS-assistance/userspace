@@ -19,6 +19,7 @@ from app.actions.handlers.physical_input import (
 )
 from app.actions.handlers.screenshot import make_screenshot
 from app.actions.handlers.terminal import make_terminal
+from app.actions.handlers.todo import make_todo
 from app.actions.handlers.web_search import make_web_search
 from app.config import ActionSettings
 
@@ -26,6 +27,9 @@ from app.config import ActionSettings
 def register_default_handlers(
     dispatcher: ActionDispatcher,
     action_settings: ActionSettings | None = None,
+    *,
+    todo_api_base: str = "",
+    auth_token: str = "",
 ) -> None:
     """Register all known handlers; policy gates decide what can run."""
     settings = action_settings or ActionSettings()
@@ -104,6 +108,11 @@ def register_default_handlers(
     hotkey_handler = make_hotkey(settings.physical_input.enabled)
     dispatcher.register("hotkey", hotkey_handler)
     dispatcher.register("keyboard.hotkey", hotkey_handler)
+    todo_handler = make_todo(todo_api_base, auth_token)
+    dispatcher.register("todo", todo_handler)
+    dispatcher.register("todo.create", todo_handler)
+    dispatcher.register("todo.update", todo_handler)
+    dispatcher.register("todo.delete", todo_handler)
 
 
 __all__ = ["register_default_handlers"]

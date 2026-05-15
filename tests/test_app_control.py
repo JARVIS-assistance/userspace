@@ -114,6 +114,43 @@ class AppControlTests(unittest.TestCase):
         self.assertEqual(command, "new_file")
         self.assertEqual(app, "Sublime Text")
 
+    def test_open_result_includes_working_context(self) -> None:
+        async def run() -> None:
+            handler = make_app_control(True)
+            with (
+                patch(
+                    "app.actions.handlers.app_control._application_exists",
+                    return_value=True,
+                ),
+                patch("app.actions.handlers.app_control._open_application"),
+                patch(
+                    "app.actions.handlers.app_control.application_profiles_from_names",
+                    return_value=[{"bundle_id": "com.apple.weather"}],
+                ),
+            ):
+                result = await handler(
+                    ClientAction(
+                        type="app_control",
+                        command="open",
+                        target="Weather",
+                        payload=None,
+                        args={},
+                        description="날씨 앱 실행",
+                        requires_confirm=False,
+                    )
+                )
+
+            self.assertEqual(result["app"], "Weather")
+            self.assertEqual(result["command"], "open")
+            self.assertEqual(result["active_app"], "Weather")
+            self.assertEqual(result["launched_app"], "Weather")
+            self.assertEqual(result["bundle_id"], "com.apple.weather")
+            self.assertEqual(result["source"], "app_control")
+
+        import asyncio
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

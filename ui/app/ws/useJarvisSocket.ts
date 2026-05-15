@@ -10,6 +10,7 @@ export interface WsMessage {
 interface Options {
     token: string;
     onMessage: (msg: WsMessage) => void;
+    onUnauthorized?: () => void;
 }
 
 async function resolveWsUrl(): Promise<string> {
@@ -26,11 +27,17 @@ async function resolveWsUrl(): Promise<string> {
     return "";
 }
 
-export function useJarvisSocket({ token, onMessage }: Options) {
+function isUnauthorizedClose(event: CloseEvent): boolean {
+    return event.code === 4001 || /unauthorized|auth|token/i.test(event.reason || "");
+}
+
+export function useJarvisSocket({ token, onMessage, onUnauthorized }: Options) {
     const wsRef = useRef<WebSocket | null>(null);
     const [status, setStatus] = useState<WsStatus>("connecting");
     const onMessageRef = useRef(onMessage);
+    const onUnauthorizedRef = useRef(onUnauthorized);
     onMessageRef.current = onMessage;
+    onUnauthorizedRef.current = onUnauthorized;
 
     useEffect(() => {
         let destroyed = false;
@@ -64,9 +71,15 @@ export function useJarvisSocket({ token, onMessage }: Options) {
                 setStatus("connected");
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
                 setStatus("disconnected");
                 wsRef.current = null;
+                if (isUnauthorizedClose(event)) {
+                    console.warn("[WS] unauthorized, returning to login");
+                    destroyed = true;
+                    onUnauthorizedRef.current?.();
+                    return;
+                }
                 if (!destroyed) {
                     console.log("[WS] disconnected, retrying in 2s...");
                     retryTimer = setTimeout(connect, 2000);
@@ -81,7 +94,9 @@ export function useJarvisSocket({ token, onMessage }: Options) {
                 try {
                     const { type, payload = {} } = JSON.parse(event.data);
                     onMessageRef.current({ type, payload });
-                } catch (_) {}
+                } catch (err) {
+                    console.warn("[WS] failed to parse message", err, event.data);
+                }
             };
         };
 

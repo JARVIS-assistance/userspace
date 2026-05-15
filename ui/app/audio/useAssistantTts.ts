@@ -8,10 +8,26 @@ export function useAssistantTts(config: TtsConfig) {
     const streamRequestIdRef = useRef<string>("");
     const requestIdRef = useRef(0);
     const cacheRef = useRef<Map<string, string>>(new Map());
+    const turnTtsRef = useRef<TurnTtsState>({
+        active: false,
+        requestId: 0,
+        queue: [],
+        buffer: "",
+        playing: false,
+        ending: false,
+    });
     configRef.current = config;
 
     const cancel = useCallback(() => {
         requestIdRef.current += 1;
+        turnTtsRef.current = {
+            active: false,
+            requestId: requestIdRef.current,
+            queue: [],
+            buffer: "",
+            playing: false,
+            ending: false,
+        };
         const bridge = (window as any).jarvisBridge;
         if (streamRequestIdRef.current && bridge?.cancelTtsStream) {
             bridge.cancelTtsStream(streamRequestIdRef.current);
@@ -28,17 +44,24 @@ export function useAssistantTts(config: TtsConfig) {
         window.dispatchEvent(new Event("jarvis-tts-end"));
     }, []);
 
-    const speak = useCallback((text: string) => {
+    const speakSegment = useCallback(async (
+        text: string,
+        requestId: number,
+        emitEnd = true,
+    ) => {
         const current = configRef.current;
         const cleaned = text.replace(/\s+/g, " ").trim();
-        if (!current.enabled || !cleaned) return;
+        if (!current.enabled || !cleaned) return false;
 
-        if (current.provider === "gpt-sovits") {
-            const requestId = ++requestIdRef.current;
+        if (
+            current.provider === "gpt-sovits" ||
+            current.provider === "qwen3-local" ||
+            current.provider === "qwen3-realtime"
+        ) {
             const streamRequestId = `tts-${Date.now()}-${Math.random().toString(16).slice(2)}`;
             streamRequestIdRef.current = streamRequestId;
             streamCleanupRef.current?.();
-            void speakGptSovitsStream(
+            await speakRealtimeStream(
                 current,
                 cleaned,
                 streamRequestId,
@@ -46,8 +69,9 @@ export function useAssistantTts(config: TtsConfig) {
                 requestId,
                 streamCleanupRef,
                 audioRef,
+                emitEnd,
             );
-            return;
+            return true;
         }
 
         if (
@@ -56,15 +80,12 @@ export function useAssistantTts(config: TtsConfig) {
             current.provider === "elevenlabs" ||
             current.provider === "openai"
         ) {
-            const requestId = ++requestIdRef.current;
-            void speakCommercial(current, cleaned, audioRef, cacheRef.current, requestIdRef, requestId);
-            return;
+            await speakCommercial(current, cleaned, audioRef, cacheRef.current, requestIdRef, requestId, emitEnd);
+            return true;
         }
 
-        if (!("speechSynthesis" in window)) return;
+        if (!("speechSynthesis" in window)) return false;
 
-        requestIdRef.current += 1;
-        window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(cleaned);
         const voices = window.speechSynthesis.getVoices();
         const voice = voices.find((item) => item.voiceURI === current.voiceURI);
@@ -75,14 +96,129 @@ export function useAssistantTts(config: TtsConfig) {
         utterance.volume = clamp(current.volume, 0, 1);
         utterance.onstart = () =>
             window.dispatchEvent(new Event("jarvis-tts-start"));
-        utterance.onend = () => window.dispatchEvent(new Event("jarvis-tts-end"));
-        utterance.onerror = () => window.dispatchEvent(new Event("jarvis-tts-end"));
-        window.speechSynthesis.speak(utterance);
+        await new Promise<void>((resolve) => {
+            utterance.onend = () => {
+                if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
+                resolve();
+            };
+            utterance.onerror = () => {
+                if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
+                resolve();
+            };
+            window.speechSynthesis.speak(utterance);
+        });
+        return true;
     }, []);
+
+    const pumpTurnTts = useCallback(async () => {
+        const state = turnTtsRef.current;
+        if (state.playing) return;
+        state.playing = true;
+        try {
+            while (
+                state.active
+                && state.requestId === requestIdRef.current
+                && state.queue.length > 0
+            ) {
+                const next = state.queue.shift() || "";
+                await speakSegment(next, state.requestId, false);
+            }
+        } finally {
+            state.playing = false;
+            if (
+                state.active
+                && state.ending
+                && state.queue.length === 0
+                && state.requestId === requestIdRef.current
+            ) {
+                state.active = false;
+                window.dispatchEvent(new Event("jarvis-tts-end"));
+            }
+        }
+    }, [speakSegment]);
+
+    const flushTurnBuffer = useCallback((force: boolean) => {
+        const current = configRef.current;
+        const state = turnTtsRef.current;
+        const text = state.buffer;
+        const cleaned = text.replace(/\s+/g, " ").trim();
+        if (!cleaned) {
+            state.buffer = "";
+            return;
+        }
+        const shouldFlush =
+            force
+            || (
+                supportsStableChunkVoice(current)
+                && (
+                    cleaned.length >= 12
+                    || /[.!?。！？…]\s*$/u.test(cleaned)
+                    || /\n\s*$/u.test(text)
+                )
+            );
+        if (!shouldFlush) return;
+        state.buffer = "";
+        state.queue.push(cleaned);
+        void pumpTurnTts();
+    }, [pumpTurnTts]);
+
+    const beginTurn = useCallback(() => {
+        cancel();
+        const requestId = ++requestIdRef.current;
+        turnTtsRef.current = {
+            active: true,
+            requestId,
+            queue: [],
+            buffer: "",
+            playing: false,
+            ending: false,
+        };
+    }, [cancel]);
+
+    const pushChunk = useCallback((text: string) => {
+        const current = configRef.current;
+        const state = turnTtsRef.current;
+        if (!current.enabled || !state.active || state.ending || !text) return;
+        state.buffer += text;
+        flushTurnBuffer(false);
+    }, [flushTurnBuffer]);
+
+    const finishTurn = useCallback((fallbackText = "") => {
+        const state = turnTtsRef.current;
+        if (!state.active) {
+            if (fallbackText) {
+                const requestId = ++requestIdRef.current;
+                void speakSegment(fallbackText, requestId);
+            }
+            return;
+        }
+        if (state.buffer.trim()) {
+            flushTurnBuffer(true);
+        } else if (state.queue.length === 0 && fallbackText && !state.playing) {
+            state.queue.push(fallbackText);
+        }
+        state.ending = true;
+        void pumpTurnTts();
+    }, [flushTurnBuffer, pumpTurnTts, speakSegment]);
+
+    const speak = useCallback((text: string) => {
+        cancel();
+        const requestId = ++requestIdRef.current;
+        void speakSegment(text, requestId);
+    }, [cancel, speakSegment]);
 
     useEffect(() => cancel, [cancel]);
 
-    return { speak, cancel };
+    return { speak, beginTurn, pushChunk, finishTurn, cancel };
+}
+
+interface TurnTtsState {
+    active: boolean;
+    requestId: number;
+    queue: string[];
+    buffer: string;
+    playing: boolean;
+    ending: boolean;
 }
 
 async function speakCommercial(
@@ -92,6 +228,7 @@ async function speakCommercial(
     cache: Map<string, string>,
     requestIdRef: React.MutableRefObject<number>,
     requestId: number,
+    emitEnd: boolean,
 ) {
     const bridge = (window as any).jarvisBridge;
     if (!bridge?.synthesizeTts) return;
@@ -115,7 +252,7 @@ async function speakCommercial(
             if (requestId !== requestIdRef.current) return;
             if (!result?.ok || !result.audioBase64) {
                 console.warn("[TTS] synthesis failed", result?.error || result);
-                window.dispatchEvent(new Event("jarvis-tts-end"));
+                if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
                 return;
             }
             source = `data:${result.mimeType || "audio/mpeg"};base64,${result.audioBase64}`;
@@ -131,21 +268,28 @@ async function speakCommercial(
         }
         const audio = new Audio(source);
         audio.volume = clamp(config.volume, 0, 1);
-        audio.onended = () => {
-            if (requestId === requestIdRef.current) {
-                window.dispatchEvent(new Event("jarvis-tts-end"));
-            }
-        };
-        audio.onerror = () => {
-            if (requestId === requestIdRef.current) {
-                window.dispatchEvent(new Event("jarvis-tts-end"));
-            }
-        };
         audioRef.current = audio;
-        await audio.play();
+        await new Promise<void>((resolve) => {
+            audio.onended = () => {
+                if (emitEnd && requestId === requestIdRef.current) {
+                    window.dispatchEvent(new Event("jarvis-tts-end"));
+                }
+                resolve();
+            };
+            audio.onerror = () => {
+                if (emitEnd && requestId === requestIdRef.current) {
+                    window.dispatchEvent(new Event("jarvis-tts-end"));
+                }
+                resolve();
+            };
+            void audio.play().catch((error) => {
+                console.warn("[TTS] playback failed", error);
+                resolve();
+            });
+        });
     } catch (error) {
         console.warn("[TTS] playback failed", error);
-        window.dispatchEvent(new Event("jarvis-tts-end"));
+        if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
     }
 }
 
@@ -170,7 +314,11 @@ function trimCache(cache: Map<string, string>, maxEntries: number) {
     }
 }
 
-async function speakGptSovitsStream(
+function supportsStableChunkVoice(config: TtsConfig): boolean {
+    return config.provider !== "qwen3-local" && config.provider !== "qwen3-realtime";
+}
+
+async function speakRealtimeStream(
     config: TtsConfig,
     text: string,
     streamRequestId: string,
@@ -178,12 +326,21 @@ async function speakGptSovitsStream(
     requestId: number,
     cleanupRef: React.MutableRefObject<(() => void) | null>,
     audioRef: React.MutableRefObject<HTMLAudioElement | null>,
+    emitEnd: boolean,
 ) {
     const bridge = (window as any).jarvisBridge;
     if (!bridge?.synthesizeTtsStream || !bridge?.onTtsStreamEvent) return;
 
     let playback: PcmStreamPlayback | null = null;
     let fallbackPlayed = false;
+    let resolveDone: (() => void) | null = null;
+    const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+    });
+    const finishDone = () => {
+        resolveDone?.();
+        resolveDone = null;
+    };
     const unsubscribe = bridge.onTtsStreamEvent((event: any) => {
         if (event?.requestId !== streamRequestId || requestId !== requestIdRef.current) {
             return;
@@ -210,26 +367,30 @@ async function speakGptSovitsStream(
 
         if (event.type === "fallback" && event.audioBase64) {
             fallbackPlayed = true;
-            void playFallbackAudio(config, event, audioRef, requestIdRef, requestId);
+            void playFallbackAudio(config, event, audioRef, requestIdRef, requestId, emitEnd)
+                .finally(finishDone);
             return;
         }
 
         if (event.type === "error") {
-            console.warn("[TTS] GPT-SoVITS streaming failed", event.error || event);
-            if (!fallbackPlayed) window.dispatchEvent(new Event("jarvis-tts-end"));
+            console.warn("[TTS] streaming failed", event.error || event);
+            if (emitEnd && !fallbackPlayed) window.dispatchEvent(new Event("jarvis-tts-end"));
             cleanupRef.current?.();
             cleanupRef.current = null;
+            finishDone();
             return;
         }
 
         if (event.type === "end") {
             playback?.finish(() => {
                 if (requestId === requestIdRef.current) {
-                    window.dispatchEvent(new Event("jarvis-tts-end"));
+                    if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
                 }
+                finishDone();
             });
             if (!playback && !fallbackPlayed) {
-                window.dispatchEvent(new Event("jarvis-tts-end"));
+                if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
+                finishDone();
             }
             unsubscribe?.();
             cleanupRef.current = playback ? () => playback?.close() : null;
@@ -243,23 +404,28 @@ async function speakGptSovitsStream(
 
     try {
         await bridge.synthesizeTtsStream({
-            ...gptSovitsPayload(config, text),
+            ...streamingTtsPayload(config, text),
             requestId: streamRequestId,
         });
+        await done;
     } catch (error) {
-        console.warn("[TTS] GPT-SoVITS stream bridge failed", error);
+        console.warn("[TTS] stream bridge failed", error);
         if (requestId === requestIdRef.current) {
-            window.dispatchEvent(new Event("jarvis-tts-end"));
+            if (emitEnd) window.dispatchEvent(new Event("jarvis-tts-end"));
         }
         cleanupRef.current?.();
         cleanupRef.current = null;
+        finishDone();
     }
 }
 
-function gptSovitsPayload(config: TtsConfig, text: string): Record<string, unknown> {
+function streamingTtsPayload(config: TtsConfig, text: string): Record<string, unknown> {
     return {
         provider: config.provider,
         text,
+        apiKey: config.apiKey,
+        voiceId: config.voiceId,
+        model: config.model,
         language: config.language,
         audioPromptPath: config.audioPromptPath,
         gptSovitsRepoPath: config.gptSovitsRepoPath,
@@ -275,6 +441,11 @@ function gptSovitsPayload(config: TtsConfig, text: string): Record<string, unkno
         gptSovitsTopK: config.gptSovitsTopK,
         gptSovitsTopP: config.gptSovitsTopP,
         gptSovitsTemperature: config.gptSovitsTemperature,
+        qwen3LocalPythonPath: config.qwen3LocalPythonPath,
+        qwen3Region: config.qwen3Region,
+        qwen3LanguageType: config.qwen3LanguageType,
+        qwen3Instructions: config.qwen3Instructions,
+        qwen3SampleRate: config.qwen3SampleRate,
     };
 }
 
@@ -284,6 +455,7 @@ async function playFallbackAudio(
     audioRef: React.MutableRefObject<HTMLAudioElement | null>,
     requestIdRef: React.MutableRefObject<number>,
     requestId: number,
+    emitEnd: boolean,
 ) {
     if (audioRef.current) {
         audioRef.current.pause();
@@ -295,12 +467,12 @@ async function playFallbackAudio(
     );
     audio.volume = clamp(config.volume, 0, 1);
     audio.onended = () => {
-        if (requestId === requestIdRef.current) {
+        if (emitEnd && requestId === requestIdRef.current) {
             window.dispatchEvent(new Event("jarvis-tts-end"));
         }
     };
     audio.onerror = () => {
-        if (requestId === requestIdRef.current) {
+        if (emitEnd && requestId === requestIdRef.current) {
             window.dispatchEvent(new Event("jarvis-tts-end"));
         }
     };

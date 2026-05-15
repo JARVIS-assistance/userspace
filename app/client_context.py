@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -43,8 +44,11 @@ def build_runtime_headers(actions: ActionSettings) -> dict[str, str]:
         "X-Client-Action-Contract": ACTION_CONTRACT,
         "X-Client-Applications": _applications_header(),
         "X-Client-Terminal-Enabled": "true" if actions.terminal.enabled else "false",
+        "X-Client-Terminal-Shell-Path": _shell_path(),
+        "X-Client-Terminal-Cwd": _terminal_cwd(actions),
         "X-Client-Terminal-Allowed-Commands": ",".join(actions.terminal.allowed_commands),
-        "X-Client-Terminal-Cwd-Allowlist": ",".join(actions.terminal.cwd_allowlist),
+        "X-Client-Terminal-Cwd-Allowlist": ",".join(_terminal_allowed_cwds(actions)),
+        "X-Client-Terminal-Timeout-Seconds": "20",
     }
 
 
@@ -59,10 +63,13 @@ def build_runtime_profile(actions: ActionSettings) -> dict[str, object]:
         "terminal": {
             "enabled": actions.terminal.enabled,
             "shell": _shell_name(),
-            "cwd": os.getcwd(),
-            "supports_pty": True,
+            "shell_path": _shell_path(),
+            "cwd": _terminal_cwd(actions),
+            "allowed_commands": list(actions.terminal.allowed_commands),
+            "allowed_cwds": _terminal_allowed_cwds(actions),
+            "supports_pty": False,
             "requires_confirm": True,
-            "timeout_seconds": 30,
+            "timeout_seconds": 20,
         },
         "metadata": {
             "search_engine": actions.browser.search_engine,
@@ -90,9 +97,58 @@ def _shell_name() -> str:
     return "zsh" if sys.platform == "darwin" else "bash"
 
 
+def _shell_path() -> str:
+    if sys.platform.startswith("win"):
+        return os.getenv("COMSPEC", "")
+    shell = os.getenv("SHELL", "")
+    if shell:
+        return shell
+    if sys.platform == "darwin":
+        return "/bin/zsh"
+    return "/bin/bash"
+
+
+def _terminal_cwd(actions: ActionSettings) -> str:
+    for cwd in _terminal_allowed_cwds(actions):
+        if str(cwd).strip():
+            return cwd
+    return os.getcwd()
+
+
+def _terminal_allowed_cwds(actions: ActionSettings) -> list[str]:
+    return [
+        str(Path(cwd).expanduser())
+        for cwd in actions.terminal.cwd_allowlist
+        if str(cwd).strip()
+    ]
+
+
 def list_available_applications() -> list[str]:
     """Return user-launchable application names for Controller-side personalization."""
     return [item["name"] for item in list_available_application_profiles()]
+
+
+def application_profiles_from_names(names: list[str]) -> list[dict[str, object]]:
+    """Return application profiles for names supplied by the compatibility header."""
+    installed = list_available_application_profiles()
+    installed_by_key = {
+        _app_name_key(str(profile.get("name") or "")): profile
+        for profile in installed
+    }
+    installed_by_key.update(
+        {
+            _app_name_key(str(alias)): profile
+            for profile in installed
+            for alias in _string_list(profile.get("aliases"))
+        }
+    )
+    profiles: list[dict[str, object]] = []
+    for name in _dedupe_names(names):
+        profiles.append(
+            installed_by_key.get(_app_name_key(name))
+            or _application_profile(name)
+        )
+    return _dedupe_profiles(profiles)
 
 
 def list_available_application_profiles() -> list[dict[str, object]]:
@@ -141,30 +197,126 @@ def _applications_header() -> str:
 
 def _application_profile(name: str, *, path: str | None = None) -> dict[str, object]:
     clean_name = str(name).strip()
+    plist_metadata = _read_app_plist_metadata(path)
+    display_name = str(
+        plist_metadata.get("display_name")
+        or plist_metadata.get("name")
+        or clean_name
+    ).strip() or clean_name
     profile: dict[str, object] = {
         "name": clean_name,
-        "display_name": clean_name,
-        "aliases": _application_aliases(clean_name),
+        "display_name": display_name,
+        "aliases": _application_aliases(clean_name, display_name),
         "kind": "macos_app" if sys.platform == "darwin" else "application",
+        "bundle_id": str(plist_metadata.get("bundle_id") or ""),
+        "executable": str(plist_metadata.get("executable") or ""),
+        "categories": [],
+        "capabilities": [],
+        "keywords": [],
     }
     if path:
         profile["path"] = path
-    return profile
+    return _enrich_application_profile(profile)
 
 
-def _application_aliases(name: str) -> list[str]:
-    aliases = {name, name.casefold()}
-    tokens = re.findall(r"[0-9A-Za-z가-힣]+", name.casefold())
-    if tokens:
-        aliases.add("".join(tokens))
-        aliases.add("_".join(tokens))
+def _read_app_plist_metadata(path: str | None) -> dict[str, str]:
+    if not path:
+        return {}
+    plist_path = Path(path) / "Contents" / "Info.plist"
+    try:
+        with plist_path.open("rb") as fh:
+            plist = plistlib.load(fh)
+    except Exception:
+        return {}
+
+    display_name = (
+        plist.get("CFBundleDisplayName")
+        or plist.get("CFBundleName")
+        or ""
+    )
+    return {
+        "bundle_id": str(plist.get("CFBundleIdentifier") or "").strip(),
+        "executable": str(plist.get("CFBundleExecutable") or "").strip(),
+        "display_name": str(display_name).strip(),
+    }
+
+
+def _application_aliases(*names: str) -> list[str]:
+    aliases: set[str] = set()
+    for name in names:
+        clean_name = str(name).strip()
+        if not clean_name:
+            continue
+        aliases.add(clean_name)
+        aliases.add(clean_name.casefold())
+        tokens = re.findall(r"[0-9A-Za-z가-힣]+", clean_name.casefold())
+        if tokens:
+            aliases.add("".join(tokens))
+            aliases.add("_".join(tokens))
     extra_aliases = {
         "Google Chrome": ("Chrome", "chrome"),
         "Microsoft Edge": ("Edge", "edge"),
         "Brave Browser": ("Brave", "brave"),
+        "Weather": ("날씨",),
     }
-    aliases.update(extra_aliases.get(name, ()))
+    for name in names:
+        aliases.update(extra_aliases.get(str(name).strip(), ()))
     return sorted(aliases, key=str.casefold)
+
+
+APP_METADATA_BY_BUNDLE_ID: dict[str, dict[str, list[str]]] = {
+    "com.apple.weather": {
+        "categories": ["weather"],
+        "capabilities": ["weather", "forecast", "날씨", "예보"],
+        "keywords": ["오늘 날씨", "지역 날씨", "기상"],
+    },
+}
+APP_METADATA_BY_NAME: dict[str, dict[str, list[str]]] = {
+    "weather": APP_METADATA_BY_BUNDLE_ID["com.apple.weather"],
+}
+
+
+def _enrich_application_profile(profile: dict[str, object]) -> dict[str, object]:
+    metadata = (
+        APP_METADATA_BY_BUNDLE_ID.get(str(profile.get("bundle_id") or ""))
+        or APP_METADATA_BY_NAME.get(str(profile.get("name") or "").casefold())
+        or APP_METADATA_BY_NAME.get(str(profile.get("display_name") or "").casefold())
+    )
+    if not metadata:
+        return profile
+
+    for field in ("categories", "capabilities", "keywords"):
+        profile[field] = _merge_string_lists(profile.get(field), metadata.get(field, ()))
+    profile["aliases"] = _merge_string_lists(
+        profile.get("aliases"),
+        [str(profile.get("display_name") or ""), *metadata.get("capabilities", ())],
+    )
+    return profile
+
+
+def _merge_string_lists(*values: object) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _string_list(value):
+            key = item.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _app_name_key(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
 
 
 def _dedupe_profiles(values: list[dict[str, object]]) -> list[dict[str, object]]:

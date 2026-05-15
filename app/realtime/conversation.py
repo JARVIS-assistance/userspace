@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -23,6 +24,8 @@ from app.models.messages import EventEnvelope
 from app.realtime.ollama_client import OllamaClient, OllamaConfig
 
 logger = logging.getLogger(__name__)
+
+INITIAL_GREETING_TEXT = "안녕하세요. 무엇을 도와드릴까요?"
 
 
 class ConversationState(str, Enum):
@@ -90,9 +93,15 @@ class ConversationManager:
         self._current_response: str = ""
         self._streaming_task: asyncio.Task[Any] | None = None
         self._barge_in_triggered = False
+        self._active_request_id: str = ""
+        self.cancelled_request_ids: set[str] = set()
         
         # Accumulated user speech (for partial -> final)
         self._pending_user_text: str = ""
+
+    @property
+    def active_request_id(self) -> str:
+        return self._active_request_id
 
     def _set_state(self, new_state: ConversationState) -> EventEnvelope:
         """Change state and notify."""
@@ -114,21 +123,34 @@ class ConversationManager:
         )
 
     async def handle_initial_greeting(self) -> AsyncIterator[EventEnvelope]:
-        """Generate an assistant greeting without requiring a user message."""
+        """Emit a fixed assistant greeting without requiring a user message."""
         if self.state in (ConversationState.PROCESSING, ConversationState.SPEAKING):
             return
 
-        prompt = (
-            "사용자가 JARVIS 앱에 처음 접근했습니다. "
-            "사용자를 반기는 짧고 자연스러운 한국어 인삿말을 생성하세요. "
-            "한 문장으로 말하고, 도움을 요청할 수 있다는 느낌만 전하세요. "
-            "도구 실행이나 외부 작업은 하지 마세요."
-        )
+        self._barge_in_triggered = False
+        self._current_response = INITIAL_GREETING_TEXT
 
         yield self._set_state(ConversationState.PROCESSING)
+        yield self._set_state(ConversationState.SPEAKING)
+        yield EventEnvelope(
+            type="conversation.delta",
+            payload={
+                "text": INITIAL_GREETING_TEXT,
+                "timestamp": int(time.time() * 1000),
+            },
+        )
 
-        async for event in self._generate_response(prompt):
-            yield event
+        self.context.add_turn("assistant", INITIAL_GREETING_TEXT)
+
+        yield EventEnvelope(
+            type="conversation.done",
+            payload={
+                "text": INITIAL_GREETING_TEXT,
+                "timestamp": int(time.time() * 1000),
+            },
+        )
+        yield self._set_state(ConversationState.IDLE)
+        self._current_response = ""
 
     async def handle_stt_partial(self, text: str) -> list[EventEnvelope]:
         """
@@ -152,7 +174,11 @@ class ConversationManager:
         
         return events
 
-    async def handle_stt_final(self, text: str) -> AsyncIterator[EventEnvelope]:
+    async def handle_stt_final(
+        self,
+        text: str,
+        route_override: str = "",
+    ) -> AsyncIterator[EventEnvelope]:
         """
         Handle final STT result.
         
@@ -165,6 +191,11 @@ class ConversationManager:
         if self.state == ConversationState.SPEAKING:
             for event in await self._handle_barge_in():
                 yield event
+        elif self.state == ConversationState.PROCESSING and self._active_request_id:
+            for event in await self.cancel(reason="barge_in"):
+                yield event
+
+        request_id = self._new_request_id()
         
         # Add user turn to history
         self.context.add_turn("user", text)
@@ -173,14 +204,22 @@ class ConversationManager:
         # Emit user message event
         yield EventEnvelope(
             type="conversation.user",
-            payload={"text": text, "timestamp": int(time.time() * 1000)},
+            payload={
+                "text": text,
+                "request_id": request_id,
+                "timestamp": int(time.time() * 1000),
+            },
         )
         
         # Transition to PROCESSING
         yield self._set_state(ConversationState.PROCESSING)
         
         # Generate LLM response
-        async for event in self._generate_response(text):
+        async for event in self._generate_response(
+            text,
+            request_id,
+            route_override=route_override,
+        ):
             yield event
 
     async def _handle_barge_in(self) -> list[EventEnvelope]:
@@ -190,9 +229,12 @@ class ConversationManager:
         events: list[EventEnvelope] = []
         
         self._barge_in_triggered = True
+        request_id = self._active_request_id
+        if request_id:
+            self.cancelled_request_ids.add(request_id)
         
         # Cancel Ollama streaming
-        self.ollama.cancel()
+        self.ollama.cancel(request_id=request_id, reason="barge_in")
         
         # Cancel streaming task if running
         if self._streaming_task and not self._streaming_task.done():
@@ -213,6 +255,8 @@ class ConversationManager:
             payload={
                 "timestamp": int(time.time() * 1000),
                 "action": "stop_tts",
+                "request_id": request_id,
+                "reason": "barge_in",
             },
         ))
         
@@ -223,7 +267,12 @@ class ConversationManager:
         
         return events
 
-    async def _generate_response(self, user_text: str) -> AsyncIterator[EventEnvelope]:
+    async def _generate_response(
+        self,
+        user_text: str,
+        request_id: str,
+        route_override: str = "",
+    ) -> AsyncIterator[EventEnvelope]:
         """
         Generate LLM response with streaming.
         """
@@ -235,7 +284,9 @@ class ConversationManager:
         try:
             async for event in self.ollama.stream_conversation(
                 prompt=user_text,
+                request_id=request_id,
                 context=self.context.get_messages()[:-1],  # Exclude current user msg (already in prompt)
+                route_override=route_override,
             ):
                 # Check for barge-in during streaming
                 if self._barge_in_triggered:
@@ -246,6 +297,7 @@ class ConversationManager:
                     "conversation.classification",
                     "conversation.thinking",
                     "conversation.plan_step",
+                    "conversation.truncated",
                     "conversation.error",
                     "conversation.action_intent",
                     "conversation.action_dispatch",
@@ -254,11 +306,7 @@ class ConversationManager:
                 }:
                     payload = dict(event.payload)
                     payload.setdefault("timestamp", int(time.time() * 1000))
-                    if (
-                        event.type == "conversation.action_intent"
-                        and payload.get("should_act") is True
-                    ):
-                        self._current_response = ""
+                    payload.setdefault("request_id", request_id)
                     yield EventEnvelope(type=event.type, payload=payload)
                     continue
 
@@ -273,6 +321,7 @@ class ConversationManager:
                             type="conversation.delta",
                             payload={
                                 "text": text,
+                                "request_id": request_id,
                                 "timestamp": int(time.time() * 1000),
                             },
                         )
@@ -310,6 +359,7 @@ class ConversationManager:
 
             payload = dict(final_done_payload or {})
             payload["text"] = self._current_response
+            payload["request_id"] = request_id
             payload["timestamp"] = int(time.time() * 1000)
             yield EventEnvelope(
                 type="conversation.done",
@@ -317,6 +367,8 @@ class ConversationManager:
             )
 
             yield self._set_state(ConversationState.IDLE)
+            if self._active_request_id == request_id:
+                self._active_request_id = ""
         
         self._current_response = ""
 
@@ -351,9 +403,13 @@ class ConversationManager:
         self._current_response = ""
         self._pending_user_text = ""
         self._barge_in_triggered = False
+        if self._active_request_id:
+            self.cancelled_request_ids.add(self._active_request_id)
+            self.ollama.cancel(request_id=self._active_request_id, reason="reset")
+            self._active_request_id = ""
         return self._set_state(ConversationState.IDLE)
 
-    async def cancel(self) -> list[EventEnvelope]:
+    async def cancel(self, reason: str = "user_cancel") -> list[EventEnvelope]:
         """User-initiated cancel — 현재 LLM 추론/응답을 중단하고 IDLE로 복귀.
 
         - reset()과 달리 conversation history는 보존
@@ -368,7 +424,10 @@ class ConversationManager:
 
         if was_active:
             self._barge_in_triggered = True
-            self.ollama.cancel()
+            request_id = self._active_request_id
+            if request_id:
+                self.cancelled_request_ids.add(request_id)
+            self.ollama.cancel(request_id=request_id, reason=reason)
 
             if self._streaming_task and not self._streaming_task.done():
                 self._streaming_task.cancel()
@@ -387,16 +446,25 @@ class ConversationManager:
             type="conversation.cancelled",
             payload={
                 "was_active": was_active,
+                "request_id": self._active_request_id,
+                "reason": reason,
                 "timestamp": int(time.time() * 1000),
             },
         ))
         if was_active:
             events.append(self._set_state(ConversationState.IDLE))
+            self._active_request_id = ""
         return events
 
     async def close(self) -> None:
         """Cleanup resources."""
-        self.ollama.cancel()
+        self.ollama.cancel(request_id=self._active_request_id, reason="close")
         if self._streaming_task and not self._streaming_task.done():
             self._streaming_task.cancel()
         await self.ollama.close()
+
+    def _new_request_id(self) -> str:
+        request_id = f"turn-{uuid.uuid4().hex}"
+        self._active_request_id = request_id
+        self._barge_in_triggered = False
+        return request_id

@@ -100,6 +100,33 @@ class PollerTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_cancelled_request_actions_are_rejected_without_dispatch(self) -> None:
+        async def run() -> None:
+            api = FakeAPI()
+            dispatcher = FakeDispatcher()
+            poller = ActionPoller(api=api, dispatcher=dispatcher)  # type: ignore[arg-type]
+            pending = _pending("act_cancelled", "req_cancelled", "keyboard_type")
+
+            poller.cancel_request("req_cancelled", "barge_in")
+            await poller.dispatch_pending_now(pending)
+
+            self.assertEqual(dispatcher.dispatched, [])
+            self.assertEqual(
+                api.results,
+                [
+                    (
+                        "act_cancelled",
+                        "rejected",
+                        {"cancelled": True, "reason": "barge_in"},
+                        "cancelled: barge_in",
+                    )
+                ],
+            )
+
+        import asyncio
+
+        asyncio.run(run())
+
 
 def _pending(action_id: str, request_id: str, action_type: str) -> PendingClientAction:
     return PendingClientAction(

@@ -20,6 +20,7 @@ DEFAULT_SAFE_ACTION_CAPABILITIES = (
     "open_url",
     "notify",
     "clipboard.copy",
+    "todo.create",
 )
 
 CAPABILITIES_BY_ACTION_TYPE: dict[str, tuple[str, ...]] = {
@@ -48,6 +49,7 @@ CAPABILITIES_BY_ACTION_TYPE: dict[str, tuple[str, ...]] = {
         "calendar.update",
         "calendar.delete",
     ),
+    "todo": ("todo.create", "todo.update", "todo.delete"),
 }
 SUPPORTED_ACTION_CAPABILITIES = tuple(
     dict.fromkeys(
@@ -111,6 +113,9 @@ DEFAULT_STT_PROFILES: dict[str, dict[str, Any]] = {
         "partial_interval_ms": 220,
     },
 }
+DEFAULT_STT_TURN_MODE = "endpoint_first"
+DEFAULT_STT_MAX_OPEN_TURN_SECONDS = 30.0
+DEFAULT_STT_LONG_TURN_POLICY = "silent_reset"
 
 
 @dataclass(frozen=True)
@@ -301,6 +306,9 @@ class Settings:
     stt_default_profile: str
     stt_profiles: dict[str, STTProfileSettings]
     stt_emit_debug_state: bool
+    stt_turn_mode: str
+    stt_max_open_turn_seconds: float
+    stt_long_turn_policy: str
     stt_cpu_threads: int
     ollama: OllamaSettings
     actions: ActionSettings
@@ -463,6 +471,13 @@ def load_settings(config_path: str | None = None) -> Settings:
         stt_default_profile=default_profile,
         stt_profiles=profiles,
         stt_emit_debug_state=bool(stt.get("emit_debug_state", False)),
+        stt_turn_mode=str(stt.get("turn_mode", DEFAULT_STT_TURN_MODE)),
+        stt_max_open_turn_seconds=float(
+            stt.get("max_open_turn_seconds", DEFAULT_STT_MAX_OPEN_TURN_SECONDS)
+        ),
+        stt_long_turn_policy=str(
+            stt.get("long_turn_policy", DEFAULT_STT_LONG_TURN_POLICY)
+        ),
         stt_cpu_threads=int(stt.get("cpu_threads", 4)),
         ollama=OllamaSettings(base_url=ollama_base_url, timeout=ollama_timeout),
         actions=ActionSettings.from_mapping(actions_raw),

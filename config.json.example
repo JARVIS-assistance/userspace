@@ -5,7 +5,7 @@
     "env": "dev"
   },
   "actions": {
-    "enabled_types": ["notify", "clipboard", "open_url", "browser"],
+    "enabled_types": ["notify", "clipboard", "open_url", "browser", "todo"],
     "enabled_capabilities": [
       "browser.open",
       "browser.navigate",
@@ -13,7 +13,10 @@
       "browser.select_result",
       "open_url",
       "notify",
-      "clipboard.copy"
+      "clipboard.copy",
+      "todo.create",
+      "todo.update",
+      "todo.delete"
     ],
     "force_confirm_capabilities": [
       "browser.click",

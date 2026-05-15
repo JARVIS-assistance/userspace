@@ -115,7 +115,7 @@ function FeedRow({
                         wordBreak: "break-word",
                     }}
                 >
-                    {formatDescription(entry)}
+                    {formatFeedDescription(entry)}
                 </div>
             )}
             <ScreenshotPreview entry={entry} />
@@ -208,13 +208,13 @@ const STATUS_PALETTE: Record<
     },
 };
 
-function statusLabel(status: FeedStatus): string {
+export function statusLabel(status: FeedStatus): string {
     if (status === "waiting_confirmation") return "CONFIRM";
     if (status === "running") return "RUNNING";
     return status.toUpperCase();
 }
 
-function formatDescription(entry: FeedEntry): string {
+export function formatFeedDescription(entry: FeedEntry): string {
     if (entry.kind === "step") return entry.description;
     if (
         entry.status !== "queued"

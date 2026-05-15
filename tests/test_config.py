@@ -36,6 +36,9 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.port, 9999)
         self.assertEqual(settings.stt_default_profile, "ultra_low_latency")
         self.assertEqual(settings.stt_model_name, "base")
+        self.assertEqual(settings.stt_turn_mode, "endpoint_first")
+        self.assertEqual(settings.stt_max_open_turn_seconds, 30.0)
+        self.assertEqual(settings.stt_long_turn_policy, "silent_reset")
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].frame_ms, 8)
         self.assertEqual(settings.stt_profiles["ultra_low_latency"].partial_interval_ms, 160)
         self.assertEqual(
@@ -73,6 +76,25 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(settings.port, 9876)
         self.assertEqual(settings.auth_api_base, "https://auth.example.com")
         self.assertEqual(settings.ollama.base_url, "https://ollama.example.com")
+
+    def test_loads_stt_turn_policy_from_json(self) -> None:
+        payload = {
+            "stt": {
+                "turn_mode": "realtime_partial",
+                "max_open_turn_seconds": 12,
+                "long_turn_policy": "silent_reset",
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            settings = load_settings(str(path))
+
+        self.assertEqual(settings.stt_turn_mode, "realtime_partial")
+        self.assertEqual(settings.stt_max_open_turn_seconds, 12.0)
+        self.assertEqual(settings.stt_long_turn_policy, "silent_reset")
 
     def test_loads_action_policy_from_json(self) -> None:
         payload = {
@@ -173,6 +195,29 @@ class TestConfigLoading(unittest.TestCase):
 
         self.assertEqual(settings.actions.enabled_capabilities, ("app.open",))
         self.assertNotIn("keyboard.type", settings.actions.enabled_capabilities)
+
+    def test_config_example_allows_app_control_capabilities(self) -> None:
+        settings = load_settings("config.example.json")
+
+        self.assertIn("app_control", settings.actions.enabled_types)
+        self.assertTrue(settings.actions.app_control.enabled)
+        self.assertIn("app.open", settings.actions.enabled_capabilities)
+        self.assertIn("app.focus", settings.actions.enabled_capabilities)
+
+    def test_config_example_enables_restricted_terminal(self) -> None:
+        settings = load_settings("config.example.json")
+
+        self.assertIn("terminal", settings.actions.enabled_types)
+        self.assertTrue(settings.actions.terminal.enabled)
+        self.assertIn("terminal.run", settings.actions.enabled_capabilities)
+        self.assertEqual(
+            settings.actions.terminal.allowed_commands,
+            ("echo", "pwd", "ls", "git status"),
+        )
+        self.assertEqual(
+            settings.actions.terminal.cwd_allowlist,
+            ("/Users/chawonje/Desktop/Workspace/project/JARVIS",),
+        )
 
 
 if __name__ == "__main__":

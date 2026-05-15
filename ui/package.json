@@ -6,14 +6,42 @@
   "main": "main.js",
   "scripts": {
     "build": "node build.js",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "pack:mac": "npm run build && electron-builder --mac dir",
+    "dist:mac": "npm run build && electron-builder --mac dmg"
+  },
+  "build": {
+    "appId": "com.jarvis.userspace",
+    "productName": "JARVIS Userspace",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    }
   },
   "dependencies": {
-    "electron": "^28.3.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^26.8.1",
     "esbuild": "^0.21.5"
   }
 }

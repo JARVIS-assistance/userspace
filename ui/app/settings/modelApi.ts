@@ -1,7 +1,23 @@
 import { resolveApiBase } from "./storage";
-import type { ModelConfig } from "./types";
+import type { ModelConfig, ModelSelection } from "./types";
 
 type HeadersFactory = () => Record<string, string>;
+
+function normalizeModelConfig(model: ModelConfig): ModelConfig {
+    return {
+        ...model,
+        is_active: model.is_active ?? true,
+        supports_stream: model.supports_stream ?? true,
+        supports_realtime: model.supports_realtime ?? false,
+    };
+}
+
+function normalizeModelSelection(selection: ModelSelection): ModelSelection {
+    return {
+        realtime_model_config_id: selection.realtime_model_config_id || null,
+        deep_model_config_id: selection.deep_model_config_id || null,
+    };
+}
 
 export async function fetchModelConfigs(
     headers: HeadersFactory,
@@ -11,7 +27,19 @@ export async function fetchModelConfigs(
         headers: headers(),
     });
     if (!res.ok) return null;
-    return await res.json();
+    const models = (await res.json()) as ModelConfig[];
+    return models.map(normalizeModelConfig);
+}
+
+export async function fetchModelSelection(
+    headers: HeadersFactory,
+): Promise<ModelSelection | null> {
+    const apiBase = await resolveApiBase();
+    const res = await fetch(`${apiBase}/chat/model-selection`, {
+        headers: headers(),
+    });
+    if (!res.ok) return null;
+    return normalizeModelSelection((await res.json()) as ModelSelection);
 }
 
 export async function saveModelConfig(
@@ -31,11 +59,11 @@ export async function saveModelConfig(
                 provider_mode: model.provider_mode,
                 provider_name: model.provider_name,
                 model_name: model.model_name,
-                api_key: model.api_key || undefined,
-                endpoint: model.endpoint || undefined,
+                api_key: model.api_key || null,
+                endpoint: model.endpoint || null,
                 is_default: model.is_default,
-                supports_stream: model.supports_stream,
-                supports_realtime: model.supports_realtime,
+                supports_stream: model.supports_stream ?? true,
+                supports_realtime: model.supports_realtime ?? false,
                 transport: model.transport,
                 input_modalities: model.input_modalities,
                 output_modalities: model.output_modalities,
@@ -43,6 +71,20 @@ export async function saveModelConfig(
         },
     );
     return res.ok;
+}
+
+export async function saveModelSelection(
+    selection: Partial<ModelSelection>,
+    headers: HeadersFactory,
+): Promise<Partial<ModelSelection> | null> {
+    const apiBase = await resolveApiBase();
+    const res = await fetch(`${apiBase}/chat/model-selection`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(selection),
+    });
+    if (!res.ok) return null;
+    return (await fetchModelSelection(headers)) ?? selection;
 }
 
 export async function deleteModelConfig(

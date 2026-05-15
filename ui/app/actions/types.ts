@@ -6,6 +6,7 @@ export type ClientActionType =
     | "open_url" | "browser" | "browser.open" | "browser.navigate" | "browser.search" | "browser.select_result"
     | "browser.extract_dom" | "browser.click" | "browser.type"
     | "browser_control" | "web_search" | "notify" | "clipboard"
+    | "todo" | "todo.create" | "todo.update" | "todo.delete"
     | "mouse.click" | "mouse.drag" | "mouse_click" | "mouse_drag"
     | "keyboard.type" | "keyboard.hotkey" | "keyboard_type" | "hotkey"
     | "screen.screenshot" | "screenshot";

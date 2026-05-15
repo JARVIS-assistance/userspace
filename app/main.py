@@ -151,6 +151,9 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
         default_profile=settings.stt_default_profile,
         profiles=settings.stt_profiles,
         emit_debug_state=settings.stt_emit_debug_state,
+        turn_mode=settings.stt_turn_mode,
+        max_open_turn_seconds=settings.stt_max_open_turn_seconds,
+        long_turn_policy=settings.stt_long_turn_policy,
     )
     # 이 WS 세션을 식별하는 stable client_id — /conversation/stream과
     # /client/actions/* 양쪽에 동일한 헤더(x-client-id)로 전송한다.
@@ -189,7 +192,12 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
     async def emit_event(envelope: EventEnvelope) -> None:
         await send_json(envelope.model_dump())
 
-    dispatcher = build_action_dispatcher(settings.actions, emit=emit_event)
+    dispatcher = build_action_dispatcher(
+        settings.actions,
+        emit=emit_event,
+        todo_api_base=settings.auth_api_base,
+        auth_token=token,
+    )
     poller = ActionPoller(api=action_api, dispatcher=dispatcher)
     poller.start()
 
@@ -230,6 +238,10 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
 
     async def cancel_pending_conversation() -> None:
         # 선행 대화(실시간 응답/의도 분류/플래닝) 중단 후 새로운 요청만 처리.
+        old_request_id = conversation.active_request_id
+        if old_request_id:
+            poller.cancel_request(old_request_id, "barge_in")
+            dispatcher.cancel_all_pending_confirms("barge_in")
         active_tasks = [task for task in list(conversation_tasks) if not task.done()]
         for task in active_tasks:
             task.cancel()
@@ -240,7 +252,7 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
             ConversationState.PROCESSING,
             ConversationState.SPEAKING,
         ):
-            cancel_events = await conversation.cancel()
+            cancel_events = await conversation.cancel(reason="barge_in")
             for ev in cancel_events:
                 print(f"[CONV] {ev.type}: {ev.payload}", flush=True)
                 await send_json(ev.model_dump())
@@ -260,7 +272,13 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                 if text:
                     print(f"[CHAT] {text}", flush=True)
                     await cancel_pending_conversation()
-                    start_conversation(conversation.handle_stt_final(text))
+                    route_override = str(payload.get("route_override", "")).strip()
+                    start_conversation(
+                        conversation.handle_stt_final(
+                            text,
+                            route_override=route_override,
+                        )
+                    )
                 continue
 
             if event_type == "conversation.greeting":
@@ -294,6 +312,8 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                         action_api=action_api,
                         dispatcher=dispatcher,
                         reload_settings=_reload_settings_global,
+                        todo_api_base=settings.auth_api_base,
+                        auth_token=token,
                     )
                 except Exception as e:
                     logger.exception("config.actions.set failed")
@@ -343,6 +363,14 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                 events = await stt_session.handle_start(payload)
                 await send_events(events, send_json=send_json)
                 start_events = await conversation.handle_speech_start()
+                for event in start_events:
+                    if event.type in ("conversation.barge_in", "conversation.cancelled"):
+                        request_id = str(event.payload.get("request_id") or "")
+                        if request_id:
+                            poller.cancel_request(request_id, str(event.payload.get("reason") or "barge_in"))
+                            dispatcher.cancel_all_pending_confirms(
+                                str(event.payload.get("reason") or "barge_in")
+                            )
                 await send_events(start_events, send_json=send_json)
                 continue
 
@@ -385,7 +413,11 @@ async def ws_endpoint(websocket: WebSocket, token: str = Query(default="")) -> N
                 continue
 
             if event_type == "conversation.cancel":
-                cancel_events = await conversation.cancel()
+                request_id = conversation.active_request_id
+                if request_id:
+                    poller.cancel_request(request_id, "user_cancel")
+                    dispatcher.cancel_all_pending_confirms("user_cancel")
+                cancel_events = await conversation.cancel(reason="user_cancel")
                 for ev in cancel_events:
                     print(f"[CONV] {ev.type}: {ev.payload}", flush=True)
                     await send_json(ev.model_dump())

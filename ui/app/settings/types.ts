@@ -5,6 +5,7 @@ export interface ModelConfig {
     model_name: string;
     api_key?: string;
     endpoint?: string;
+    is_active: boolean;
     is_default: boolean;
     supports_stream: boolean;
     supports_realtime: boolean;
@@ -13,15 +14,33 @@ export interface ModelConfig {
     output_modalities: string;
 }
 
+export interface ModelSelection {
+    realtime_model_config_id?: string | null;
+    deep_model_config_id?: string | null;
+}
+
 export interface Persona {
+    user_persona_id?: string;
     icon: string;
     name: string;
     description: string;
+    prompt_template: string;
+    tone: string;
+    alias: string;
+    selected?: boolean;
 }
 
 export interface TtsConfig {
     enabled: boolean;
-    provider: "browser" | "chatterbox" | "vibevoice" | "gpt-sovits" | "elevenlabs" | "openai";
+    provider:
+        | "browser"
+        | "qwen3-local"
+        | "chatterbox"
+        | "vibevoice"
+        | "gpt-sovits"
+        | "qwen3-realtime"
+        | "elevenlabs"
+        | "openai";
     voiceURI: string;
     apiKey: string;
     voiceId: string;
@@ -41,6 +60,11 @@ export interface TtsConfig {
     gptSovitsTopK: number;
     gptSovitsTopP: number;
     gptSovitsTemperature: number;
+    qwen3Region: "international" | "china";
+    qwen3LocalPythonPath: string;
+    qwen3LanguageType: string;
+    qwen3Instructions: string;
+    qwen3SampleRate: number;
     exaggeration: number;
     cfgWeight: number;
     rate: number;
@@ -53,17 +77,35 @@ export interface VisualConfig {
 }
 
 export interface CameraConfig {
+    enabled: boolean;
     deviceId: string;
     label: string;
     preferPhysical: boolean;
 }
 
+export interface WakewordSample {
+    id: string;
+    createdAt: number;
+    durationMs: number;
+    fingerprint: number[][];
+}
+
+export interface WakewordConfig {
+    enabled: boolean;
+    phraseLabel: string;
+    requiredSamples: number;
+    threshold: number;
+    samples: WakewordSample[];
+}
+
 export interface SettingsData {
     models: ModelConfig[];
+    modelSelection: ModelSelection;
     persona: Persona;
     tts: TtsConfig;
     visual: VisualConfig;
     camera: CameraConfig;
+    wakeword: WakewordConfig;
 }
 
 export const PERSONA_ICONS = [
@@ -83,15 +125,24 @@ export const DEFAULT_PERSONA: Persona = {
     icon: "\u{1F916}",
     name: "J.A.R.V.I.S",
     description: "Just A Rather Very Intelligent System",
+    prompt_template: "친절하고 간결하게 답해.",
+    tone: "neutral",
+    alias: "jarvis",
+    selected: true,
+};
+
+export const DEFAULT_MODEL_SELECTION: ModelSelection = {
+    realtime_model_config_id: null,
+    deep_model_config_id: null,
 };
 
 export const DEFAULT_TTS: TtsConfig = {
     enabled: false,
-    provider: "vibevoice",
+    provider: "qwen3-local",
     voiceURI: "",
     apiKey: "",
-    voiceId: "Carter",
-    model: "microsoft/VibeVoice-Realtime-0.5B",
+    voiceId: "Chelsie",
+    model: "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit",
     language: "ko",
     audioPromptPath: "",
     gptSovitsRepoPath: "",
@@ -107,6 +158,11 @@ export const DEFAULT_TTS: TtsConfig = {
     gptSovitsTopK: 15,
     gptSovitsTopP: 1,
     gptSovitsTemperature: 1,
+    qwen3Region: "international",
+    qwen3LocalPythonPath: "",
+    qwen3LanguageType: "Korean",
+    qwen3Instructions: "calm Korean assistant voice, concise and warm",
+    qwen3SampleRate: 24000,
     exaggeration: 0.5,
     cfgWeight: 0.5,
     rate: 1,
@@ -119,9 +175,18 @@ export const DEFAULT_VISUAL: VisualConfig = {
 };
 
 export const DEFAULT_CAMERA: CameraConfig = {
+    enabled: false,
     deviceId: "",
     label: "",
     preferPhysical: true,
+};
+
+export const DEFAULT_WAKEWORD: WakewordConfig = {
+    enabled: false,
+    phraseLabel: "Jarvis",
+    requiredSamples: 3,
+    threshold: 0.28,
+    samples: [],
 };
 
 export const EMPTY_MODEL: ModelConfig = {
@@ -130,6 +195,7 @@ export const EMPTY_MODEL: ModelConfig = {
     model_name: "",
     api_key: "",
     endpoint: "",
+    is_active: true,
     is_default: false,
     supports_stream: true,
     supports_realtime: false,

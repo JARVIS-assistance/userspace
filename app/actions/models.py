@@ -28,6 +28,7 @@ ClientActionType = Literal[
     "calendar_control",
     "notify",
     "clipboard",
+    "todo",
     # 물리 (입력 합성)
     "mouse_click",
     "mouse_drag",

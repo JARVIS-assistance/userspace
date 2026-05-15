@@ -101,11 +101,11 @@ class ActionDispatcher:
         fut.set_result(ConfirmDecision(accepted=accepted, reason=reason))
         return True
 
-    def cancel_all_pending_confirms(self) -> None:
+    def cancel_all_pending_confirms(self, reason: str = "websocket disconnected") -> None:
         """WS 끊길 때 호출 — 대기중인 컨펌 모두 거절 처리."""
         for fut in self._pending_confirms.values():
             if not fut.done():
-                fut.set_result(ConfirmDecision(accepted=False, reason="websocket disconnected"))
+                fut.set_result(ConfirmDecision(accepted=False, reason=reason))
         self._pending_confirms.clear()
 
     # ── 메인 dispatch ──────────────────────────────────
@@ -276,6 +276,9 @@ class ActionDispatcher:
             "calendar.create",
             "calendar.update",
             "calendar.delete",
+            "todo.create",
+            "todo.update",
+            "todo.delete",
         }:
             return action_type
         if action_type == "browser":
@@ -334,6 +337,19 @@ class ActionDispatcher:
             return "file.read"
         if action_type == "screenshot":
             return "screen.screenshot"
+        if action_type == "todo":
+            todo_commands = {
+                "create": "todo.create",
+                "add": "todo.create",
+                "new": "todo.create",
+                "update": "todo.update",
+                "patch": "todo.update",
+                "complete": "todo.update",
+                "done": "todo.update",
+                "delete": "todo.delete",
+                "remove": "todo.delete",
+            }
+            return todo_commands.get(command, "todo.create")
         return None
 
     async def _await_confirm(self, pending: PendingClientAction) -> ConfirmDecision:

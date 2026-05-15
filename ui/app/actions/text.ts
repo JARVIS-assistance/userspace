@@ -23,10 +23,6 @@ export function displayDoneText(payload: Record<string, any>): string {
     const actionText = displayActionResults(payload);
     if (actionText) return actionText;
 
-    const summary = String(payload.summary || "").trim();
-    if (summary && summary !== "direct client action dispatched") {
-        return summary;
-    }
     const rawText = String(payload.text || "");
     const providerError = displayProviderError(rawText);
     if (providerError) return providerError;
@@ -36,6 +32,12 @@ export function displayDoneText(payload: Record<string, any>): string {
     const cleaned = cleanAssistantText(rawText);
     if (!cleaned && looksLikeDisplayOnlyAction(rawText)) {
         return "실행할 액션이 백엔드 큐로 전달되지 않았습니다.";
+    }
+    if (cleaned) return cleaned;
+
+    const summary = String(payload.summary || "").trim();
+    if (summary && summary !== "direct client action dispatched") {
+        return summary;
     }
     return cleaned;
 }

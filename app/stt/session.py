@@ -19,6 +19,10 @@ from app.stt.whisper_engine import LocalWhisperEngine
 SILENCE_THRESHOLD_RMS = 0.01
 SILENCE_DURATION_MS = 1500
 MIN_FINALIZE_SILENCE_MS = 450
+DEFAULT_MAX_OPEN_TURN_SECONDS = 30.0
+TURN_MODE_ENDPOINT_FIRST = "endpoint_first"
+TURN_MODE_REALTIME_PARTIAL = "realtime_partial"
+LONG_TURN_POLICY_SILENT_RESET = "silent_reset"
 
 
 @dataclass
@@ -73,6 +77,9 @@ class STTSession:
         profiles: dict[str, Any],
         emit_debug_state: bool,
         silence_duration_ms: int = SILENCE_DURATION_MS,
+        turn_mode: str = TURN_MODE_ENDPOINT_FIRST,
+        max_open_turn_seconds: float = DEFAULT_MAX_OPEN_TURN_SECONDS,
+        long_turn_policy: str = LONG_TURN_POLICY_SILENT_RESET,
     ) -> None:
         self.engine = engine
         self.default_sample_rate = sample_rate
@@ -80,10 +87,18 @@ class STTSession:
         self.profiles = profiles
         self.emit_debug_state = emit_debug_state
         self.silence_duration_ms = silence_duration_ms
+        self.turn_mode = (
+            TURN_MODE_REALTIME_PARTIAL
+            if turn_mode == TURN_MODE_REALTIME_PARTIAL
+            else TURN_MODE_ENDPOINT_FIRST
+        )
+        self.max_open_turn_seconds = max(1.0, float(max_open_turn_seconds))
+        self.long_turn_policy = long_turn_policy or LONG_TURN_POLICY_SILENT_RESET
 
         self.active = False
         self.client_sample_rate = sample_rate
         self._realtime: RealTimePartialSTT | _CompatRealtime | None = None
+        self._endpoint_buffer: list[np.ndarray] = []
         
         self._last_speech_time: float = 0.0
         self._speech_start_time: float = 0.0
@@ -123,6 +138,7 @@ class STTSession:
         self._speech_start_time = 0.0
         self._has_speech = False
         self._last_partial_text = ""
+        self._endpoint_buffer = []
         return [
             EventEnvelope(
                 type="stt.state",
@@ -160,44 +176,64 @@ class STTSession:
         if self.client_sample_rate != runtime_rate:
             chunk = self._resample_to_target_rate(chunk, self.client_sample_rate, runtime_rate)
 
-        result = await asyncio.to_thread(self._realtime.add_audio_chunk, chunk)
         events: list[EventEnvelope] = []
-        
-        text_changed = bool(result.text) and result.text != self._last_partial_text
-        if result.text:
-            self._last_partial_text = result.text
 
         silence_ms = (now - self._last_speech_time) * 1000
         speech_ms = (self._last_speech_time - self._speech_start_time) * 1000
+        open_turn_ms = (now - self._speech_start_time) * 1000 if self._has_speech else 0
         endpoint_silence_ms = self._endpoint_silence_ms()
         should_finalize = (
             self._has_speech 
             and speech_ms >= self._minimum_speech_ms()
             and silence_ms >= endpoint_silence_ms
         )
-        
-        if should_finalize:
-            flushed = await asyncio.to_thread(self._realtime.flush)
-            if flushed.text:
+
+        if (
+            self._has_speech
+            and open_turn_ms >= self.max_open_turn_seconds * 1000
+            and not should_finalize
+        ):
+            self._reset_turn()
+            if self.emit_debug_state:
                 events.append(
                     EventEnvelope(
-                        type="stt.final",
+                        type="stt.state",
                         payload={
-                            "text": flushed.text,
-                            "confidence": flushed.confidence,
-                            "mfcc_dim": flushed.mfcc_dim,
+                            "status": "long_turn_reset",
+                            "client_sample_rate": self.client_sample_rate,
+                            "engine_sample_rate": runtime_rate,
+                            "policy": self.long_turn_policy,
                         },
                     )
                 )
-            self._realtime.reset()
-            self._has_speech = False
-            self._speech_start_time = 0.0
-            self._last_partial_text = ""
-        elif result.is_final:
+            return events
+
+        if self.turn_mode == TURN_MODE_ENDPOINT_FIRST:
+            if self._has_speech:
+                self._endpoint_buffer.append(chunk)
+            if should_finalize:
+                flushed = await self._flush_endpoint_buffer()
+                if flushed.text:
+                    events.append(self._final_event(flushed))
+                self._reset_turn()
+        else:
+            result = await asyncio.to_thread(self._realtime.add_audio_chunk, chunk)
+            text_changed = bool(result.text) and result.text != self._last_partial_text
             if result.text:
+                self._last_partial_text = result.text
+
+            if should_finalize:
+                flushed = await asyncio.to_thread(self._realtime.flush)
+                if flushed.text:
+                    events.append(self._final_event(flushed))
+                self._reset_turn()
+            elif result.is_final:
+                if result.text:
+                    events.append(self._final_event(result))
+            elif text_changed:
                 events.append(
                     EventEnvelope(
-                        type="stt.final",
+                        type="stt.partial",
                         payload={
                             "text": result.text,
                             "confidence": result.confidence,
@@ -205,17 +241,6 @@ class STTSession:
                         },
                     )
                 )
-        elif text_changed:
-            events.append(
-                EventEnvelope(
-                    type="stt.partial",
-                    payload={
-                        "text": result.text,
-                        "confidence": result.confidence,
-                        "mfcc_dim": result.mfcc_dim,
-                    },
-                )
-            )
 
         if self.emit_debug_state:
             events.append(
@@ -225,6 +250,7 @@ class STTSession:
                         "status": "frame",
                         "client_sample_rate": self.client_sample_rate,
                         "engine_sample_rate": runtime_rate,
+                        "turn_mode": self.turn_mode,
                     },
                 )
             )
@@ -239,7 +265,10 @@ class STTSession:
         confidence: float | None = None
         mfcc_dim = 0
         if self._realtime is not None:
-            flushed = await asyncio.to_thread(self._realtime.flush)
+            if self.turn_mode == TURN_MODE_ENDPOINT_FIRST and self._endpoint_buffer:
+                flushed = await self._flush_endpoint_buffer()
+            else:
+                flushed = await asyncio.to_thread(self._realtime.flush)
             self._realtime.reset()
             final_text = flushed.text
             confidence = flushed.confidence
@@ -311,6 +340,33 @@ class STTSession:
         up = target_rate // factor
         down = source_rate // factor
         return np.asarray(resample_poly(audio, up, down), dtype=np.float32)
+
+    async def _flush_endpoint_buffer(self) -> _CompatStreamingResult:
+        if self._realtime is None or not self._endpoint_buffer:
+            return _CompatStreamingResult(text="", is_final=True, confidence=None, mfcc_dim=0)
+        merged = np.concatenate(self._endpoint_buffer).astype(np.float32)
+        self._endpoint_buffer = []
+        await asyncio.to_thread(self._realtime.add_audio_chunk, merged)
+        return await asyncio.to_thread(self._realtime.flush)
+
+    def _reset_turn(self) -> None:
+        if self._realtime is not None:
+            self._realtime.reset()
+        self._endpoint_buffer = []
+        self._has_speech = False
+        self._speech_start_time = 0.0
+        self._last_speech_time = time.time()
+        self._last_partial_text = ""
+
+    def _final_event(self, result: Any) -> EventEnvelope:
+        return EventEnvelope(
+            type="stt.final",
+            payload={
+                "text": result.text,
+                "confidence": result.confidence,
+                "mfcc_dim": result.mfcc_dim,
+            },
+        )
 
     def _endpoint_silence_ms(self) -> int:
         profile = self._active_profile

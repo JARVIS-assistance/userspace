@@ -4,13 +4,25 @@ import asyncio
 import unittest
 
 from app.models.messages import EventEnvelope
-from app.realtime.conversation import ConversationManager
+from app.realtime.conversation import ConversationManager, INITIAL_GREETING_TEXT
 
 
 class _FakeOllama:
     async def stream_conversation(self, **kwargs):
         yield EventEnvelope(type="conversation.delta", payload={"text": "녕하세요!"})
         yield EventEnvelope(type="conversation.done", payload={"text": "안녕하세요!"})
+
+    def cancel(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+class _FailingOllama:
+    async def stream_conversation(self, **kwargs):
+        raise AssertionError("initial greeting should not call the LLM backend")
+        yield
 
     def cancel(self) -> None:
         return None
@@ -91,6 +103,21 @@ class ConversationManagerTests(unittest.TestCase):
         done = next(event for event in events if event.type == "conversation.done")
 
         self.assertEqual(done.payload["text"], "안녕하세요!")
+        self.assertTrue(str(done.payload["request_id"]).startswith("turn-"))
+
+    def test_each_turn_uses_a_new_request_id(self) -> None:
+        async def run():
+            manager = ConversationManager()
+            manager.ollama = _FakeOllama()  # type: ignore[assignment]
+            first = [event async for event in manager.handle_stt_final("첫 번째")]
+            second = [event async for event in manager.handle_stt_final("두 번째")]
+            return first, second
+
+        first, second = asyncio.run(run())
+        first_done = next(event for event in first if event.type == "conversation.done")
+        second_done = next(event for event in second if event.type == "conversation.done")
+
+        self.assertNotEqual(first_done.payload["request_id"], second_done.payload["request_id"])
 
     def test_action_dispatch_after_backend_done_is_forwarded_before_final_done(self) -> None:
         async def run():
@@ -115,7 +142,7 @@ class ConversationManagerTests(unittest.TestCase):
 
         self.assertFalse(intent.payload["should_act"])
 
-    def test_action_intent_clears_prior_realtime_text(self) -> None:
+    def test_action_intent_does_not_clear_assistant_delta_text(self) -> None:
         async def run():
             manager = ConversationManager()
             manager.ollama = _FakeOllamaActionAfterBadRealtime()  # type: ignore[assignment]
@@ -124,12 +151,15 @@ class ConversationManagerTests(unittest.TestCase):
         events = asyncio.run(run())
         done = next(event for event in events if event.type == "conversation.done")
 
-        self.assertEqual(done.payload["text"], "잠시만요!요청하신 작업 시작할게요")
+        self.assertEqual(
+            done.payload["text"],
+            "죄송합니다, 못 합니다.잠시만요!요청하신 작업 시작할게요",
+        )
 
     def test_initial_greeting_generates_without_user_turn(self) -> None:
         async def run():
             manager = ConversationManager()
-            manager.ollama = _FakeOllama()  # type: ignore[assignment]
+            manager.ollama = _FailingOllama()  # type: ignore[assignment]
             events = [
                 event async for event in manager.handle_initial_greeting()
             ]
@@ -140,9 +170,11 @@ class ConversationManagerTests(unittest.TestCase):
         done = next(event for event in events if event.type == "conversation.done")
 
         self.assertNotIn("conversation.user", types)
-        self.assertEqual(done.payload["text"], "안녕하세요!")
+        self.assertIn("conversation.delta", types)
+        self.assertEqual(done.payload["text"], INITIAL_GREETING_TEXT)
         self.assertEqual(len(manager.context.history), 1)
         self.assertEqual(manager.context.history[0].role, "assistant")
+        self.assertEqual(manager.context.history[0].content, INITIAL_GREETING_TEXT)
 
 
 if __name__ == "__main__":

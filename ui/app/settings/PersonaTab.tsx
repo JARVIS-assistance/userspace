@@ -3,10 +3,19 @@ import { PERSONA_ICONS, type Persona } from "./types";
 
 interface Props {
     persona: Persona;
+    loading: boolean;
+    error: string | null;
     onChange: (u: Partial<Persona>) => void;
+    onSave: () => void;
 }
 
-export default function PersonaTab({ persona, onChange }: Props) {
+export default function PersonaTab({
+    persona,
+    loading,
+    error,
+    onChange,
+    onSave,
+}: Props) {
     return (
         <div>
             <div style={{ marginBottom: 20 }}>
@@ -38,6 +47,26 @@ export default function PersonaTab({ persona, onChange }: Props) {
                     placeholder="J.A.R.V.I.S"
                 />
             </div>
+            <div style={css.row}>
+                <div style={css.half}>
+                    <label style={css.label}>TONE</label>
+                    <input
+                        style={css.input}
+                        value={persona.tone}
+                        onChange={(e) => onChange({ tone: e.target.value })}
+                        placeholder="casual"
+                    />
+                </div>
+                <div style={css.half}>
+                    <label style={css.label}>ALIAS</label>
+                    <input
+                        style={css.input}
+                        value={persona.alias}
+                        onChange={(e) => onChange({ alias: e.target.value })}
+                        placeholder="friend"
+                    />
+                </div>
+            </div>
             <div style={{ marginBottom: 20 }}>
                 <label style={css.label}>DESCRIPTION</label>
                 <textarea
@@ -51,6 +80,49 @@ export default function PersonaTab({ persona, onChange }: Props) {
                         lineHeight: 1.5,
                     }}
                 />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+                <label style={css.label}>PROMPT TEMPLATE</label>
+                <textarea
+                    value={persona.prompt_template}
+                    onChange={(e) =>
+                        onChange({ prompt_template: e.target.value })
+                    }
+                    placeholder="친구처럼 짧고 자연스럽게 말해."
+                    rows={5}
+                    style={{
+                        ...css.input,
+                        resize: "vertical" as const,
+                        lineHeight: 1.5,
+                    }}
+                />
+            </div>
+            {error && (
+                <p
+                    role="alert"
+                    style={{
+                        color: "rgba(220,80,60,0.9)",
+                        fontSize: 12,
+                        margin: "0 0 12px",
+                    }}
+                >
+                    {error}
+                </p>
+            )}
+            <div
+                style={{
+                    display: "flex",
+                    justifyContent: "flex-end",
+                    marginBottom: 20,
+                }}
+            >
+                <button
+                    style={css.btn("primary")}
+                    onClick={onSave}
+                    disabled={loading}
+                >
+                    {loading ? "저장 중..." : "페르소나 저장"}
+                </button>
             </div>
             <div
                 style={{

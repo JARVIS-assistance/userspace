@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from app.client_context import application_profiles_from_names
 from app.actions.handlers.base import HandlerError
 from app.actions.models import ClientAction
 
@@ -48,12 +49,12 @@ def make_app_control(enabled: bool):
                     f"application not found: {app_name}. Install it or use the exact macOS app name."
                 )
             await _open_application(app_name)
-            return {"app": app_name, "command": command}
+            return _app_control_result(app_name, command)
 
         if command in {"new_file", "new_tab"}:
             await _activate_application(app_name)
             await _send_new_file_hotkey()
-            return {"app": app_name, "command": command}
+            return _app_control_result(app_name, command)
 
         escaped = _escape_applescript(app_name)
         if command in {"quit", "close"}:
@@ -70,9 +71,26 @@ def make_app_control(enabled: bool):
             raise HandlerError(
                 f"app_control failed rc={proc.returncode}: {err.decode(errors='replace')[:300]}"
             )
-        return {"app": app_name, "command": command}
+        return _app_control_result(app_name, command)
 
     return app_control
+
+
+def _app_control_result(app_name: str, command: str) -> dict[str, Any]:
+    profile = _application_profile_for_result(app_name)
+    return {
+        "app": app_name,
+        "command": command,
+        "active_app": app_name,
+        "launched_app": app_name if command in {"open", "activate"} else "",
+        "bundle_id": str(profile.get("bundle_id") or ""),
+        "source": "app_control",
+    }
+
+
+def _application_profile_for_result(app_name: str) -> dict[str, object]:
+    profiles = application_profiles_from_names([app_name])
+    return profiles[0] if profiles else {}
 
 
 def _normalize_command_and_app(action: ClientAction) -> tuple[str, str]:

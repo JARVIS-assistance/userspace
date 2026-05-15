@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
 
+from app.client_context import application_profiles_from_names
 from app.models.messages import EventEnvelope
 from app.realtime.model_config import ModelConfig
 from app.realtime.sse_parser import parse_conversation_stream
@@ -59,6 +61,7 @@ class OllamaClient:
         self._session: aiohttp.ClientSession | None = None
         self._current_task: asyncio.Task[Any] | None = None
         self._cancelled = False
+        self._current_response: aiohttp.ClientResponse | None = None
         self._models: list[ModelConfig] = []
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -83,12 +86,23 @@ class OllamaClient:
             await self._session.close()
             self._session = None
 
-    def cancel(self) -> None:
+    def cancel(self, request_id: str = "", reason: str = "barge_in") -> None:
         """barge-in 시 현재 스트림 취소."""
         self._cancelled = True
+        if self._current_response is not None:
+            with contextlib.suppress(Exception):
+                self._current_response.close()
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
             logger.info("LLM 스트림 취소 (barge-in)")
+        if request_id:
+            try:
+                asyncio.create_task(
+                    self.cancel_conversation(request_id, reason),
+                    name=f"conversation_cancel_{request_id}",
+                )
+            except RuntimeError:
+                logger.warning("unable to schedule conversation cancel request_id=%s", request_id)
 
     def reset_cancellation(self) -> None:
         self._cancelled = False
@@ -173,9 +187,11 @@ class OllamaClient:
     async def stream_conversation(
         self,
         prompt: str,
+        request_id: str,
         context: list[dict[str, str]] | None = None,
         task_type: str = "general",
         confirm: bool = False,
+        route_override: str = "",
     ) -> AsyncIterator[EventEnvelope]:
         self.reset_cancellation()
         session = await self._get_session()
@@ -184,9 +200,12 @@ class OllamaClient:
             "message": prompt,
             "client_context": _client_context_payload(self.config.runtime_headers),
         }
+        if route_override:
+            payload["route_override"] = route_override
 
         headers = self._auth_headers()
         headers["Accept"] = "text/event-stream"
+        headers["x-request-id"] = request_id
 
         try:
             async with session.post(
@@ -194,6 +213,7 @@ class OllamaClient:
                 json=payload,
                 headers=headers,
             ) as resp:
+                self._current_response = resp
                 if resp.status != 200:
                     body = await resp.text()
                     logger.error(f"HTTP 에러: {resp.status} body={body[:300]}")
@@ -217,7 +237,29 @@ class OllamaClient:
             )
         except asyncio.CancelledError:
             logger.info("LLM 스트림 태스크 취소됨")
-            yield EventEnvelope(type="conversation.done", payload={"text": ""})
+        finally:
+            self._current_response = None
+
+    async def cancel_conversation(self, request_id: str, reason: str = "barge_in") -> None:
+        if not request_id:
+            return
+        session = await self._get_session()
+        try:
+            async with session.post(
+                "/conversation/cancel",
+                json={"request_id": request_id, "reason": reason},
+                headers=self._auth_headers(),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.warning(
+                        "conversation cancel failed request_id=%s status=%s body=%s",
+                        request_id,
+                        resp.status,
+                        body[:200],
+                    )
+        except Exception as exc:
+            logger.warning("conversation cancel request failed request_id=%s: %s", request_id, exc)
 
     async def stream_generate(
         self,
@@ -228,6 +270,7 @@ class OllamaClient:
     ) -> AsyncIterator[StreamChunk]:
         async for event in self.stream_conversation(
             prompt,
+            request_id=f"legacy-{id(self)}",
             context=context,
             task_type=task_type,
             confirm=confirm,
@@ -266,6 +309,7 @@ class OllamaClient:
 def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
     """Mirror action context in the JSON body for controllers that ignore headers."""
     capabilities = _split_header_list(runtime_headers.get("X-Client-Capabilities", ""))
+    application_names = _split_header_list(runtime_headers.get("X-Client-Applications", ""))
     return {
         "platform": runtime_headers.get("X-Client-Platform", ""),
         "shell": runtime_headers.get("X-Client-Shell", ""),
@@ -277,14 +321,23 @@ def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
         "enabled_capabilities": _split_header_list(
             runtime_headers.get("X-Client-Enabled-Capabilities", "")
         ),
-        "applications": _split_header_list(runtime_headers.get("X-Client-Applications", "")),
+        "applications": application_profiles_from_names(application_names),
         "terminal": {
             "enabled": runtime_headers.get("X-Client-Terminal-Enabled") == "true",
+            "shell": runtime_headers.get("X-Client-Shell", ""),
+            "shell_path": runtime_headers.get("X-Client-Terminal-Shell-Path", ""),
+            "cwd": runtime_headers.get("X-Client-Terminal-Cwd", ""),
             "allowed_commands": _split_header_list(
                 runtime_headers.get("X-Client-Terminal-Allowed-Commands", "")
             ),
-            "cwd_allowlist": _split_header_list(
+            "allowed_cwds": _split_header_list(
                 runtime_headers.get("X-Client-Terminal-Cwd-Allowlist", "")
+            ),
+            "supports_pty": False,
+            "requires_confirm": True,
+            "timeout_seconds": _int_header(
+                runtime_headers.get("X-Client-Terminal-Timeout-Seconds", ""),
+                20,
             ),
         },
         "action_contract": {
@@ -297,6 +350,13 @@ def _client_context_payload(runtime_headers: dict[str, str]) -> dict[str, Any]:
 
 def _split_header_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _int_header(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 _default_client: OllamaClient | None = None

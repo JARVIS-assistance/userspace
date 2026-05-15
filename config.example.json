@@ -27,6 +27,9 @@
     "language": "ko",
     "sample_rate": 16000,
     "default_profile": "default",
+    "turn_mode": "endpoint_first",
+    "max_open_turn_seconds": 30,
+    "long_turn_policy": "silent_reset",
     "emit_debug_state": false
   },
 
@@ -39,7 +42,9 @@
       "browser",
       "browser_control",
       "app_control",
-      "web_search"
+      "terminal",
+      "web_search",
+      "todo"
     ],
 
     "_comment_force_confirm_types": "requires_confirm=False여도 무조건 사용자 확인을 받는 type 목록. 백엔드 LLM 실수로 위험 액션이 silent 실행되는 것을 막는 안전망.",
@@ -57,9 +62,15 @@
       "browser.navigate",
       "browser.search",
       "browser.select_result",
+      "app.open",
+      "app.focus",
+      "terminal.run",
       "open_url",
       "notify",
-      "clipboard.copy"
+      "clipboard.copy",
+      "todo.create",
+      "todo.update",
+      "todo.delete"
     ],
 
     "force_confirm_capabilities": [
@@ -90,9 +101,9 @@
 
     "terminal": {
       "_comment": "shell 실행. enabled=false면 무조건 거부. allowed_commands 매칭 + cwd_allowlist 강제.",
-      "enabled": false,
-      "allowed_commands": ["ls", "pwd", "git status"],
-      "cwd_allowlist": ["~/Documents/jarvis-out"]
+      "enabled": true,
+      "allowed_commands": ["echo", "pwd", "ls", "git status"],
+      "cwd_allowlist": ["/Users/chawonje/Desktop/Workspace/project/JARVIS"]
     },
 
     "physical_input": {
