@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import time
 from pathlib import Path
 from typing import Any
 
@@ -53,17 +54,13 @@ def _resolve_allowlist(paths: tuple[str, ...]) -> list[Path]:
 
 def _ensure_cwd_allowed(cwd: Path, allowlist: list[Path]) -> None:
     if not allowlist:
-        # cwd_allowlist가 비어있으면 cwd 지정 자체를 거부 (안전한 기본)
         raise HandlerError(
             "terminal cwd not allowed: cwd_allowlist is empty in policy"
         )
     for root in allowlist:
-        try:
-            cwd.relative_to(root)
+        if cwd == root:
             return
-        except ValueError:
-            continue
-    raise HandlerError(f"terminal cwd not under any cwd_allowlist root: {cwd}")
+    raise HandlerError(f"terminal cwd not allowed: {cwd}")
 
 
 def make_terminal(
@@ -77,26 +74,37 @@ def make_terminal(
         if not enabled:
             raise HandlerError("terminal disabled by policy")
         command = _terminal_command(action)
+        cwd_str = _terminal_cwd_value(action, cwd_roots)
+        output_context = {
+            "command": command,
+            "cwd": cwd_str,
+            "shell": _terminal_shell(action),
+            "source": "terminal",
+        }
+        try:
+            _ensure_cwd_allowed(Path(cwd_str).resolve(), cwd_roots)
+        except HandlerError as e:
+            raise HandlerError(str(e), output=output_context) from e
         if not command:
-            raise HandlerError("missing terminal command")
+            raise HandlerError("Missing terminal command", output=output_context)
         try:
             argv = shlex.split(command)
         except ValueError as e:
-            raise HandlerError(f"invalid terminal command: {e}") from e
+            raise HandlerError(
+                f"Invalid terminal command: {e}",
+                output=output_context,
+            ) from e
         if not _command_allowed(argv, allowed_commands):
-            raise HandlerError(f"terminal command not allowed: {argv[0]!r}")
+            raise HandlerError("Command is not allowed", output=output_context)
 
-        cwd_str: str | None = None
-        cwd_raw = action.args.get("cwd")
-        if cwd_raw:
-            cwd = Path(str(cwd_raw)).expanduser().resolve()
-            _ensure_cwd_allowed(cwd, cwd_roots)
-            cwd_str = str(cwd)
-
-        timeout = float(action.args.get("timeout", 30))
+        timeout = float(action.args.get("timeout", 20))
         if timeout <= 0 or timeout > 300:
-            raise HandlerError("terminal timeout must be in (0, 300] seconds")
+            raise HandlerError(
+                "Terminal timeout must be in (0, 300] seconds",
+                output=output_context,
+            )
 
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=cwd_str,
@@ -109,23 +117,52 @@ def make_terminal(
         except asyncio.TimeoutError as e:
             proc.kill()
             await proc.communicate()
-            raise HandlerError(f"terminal command timed out after {timeout:g}s") from e
+            raise HandlerError(
+                f"Terminal command timed out after {timeout:g}s",
+                output=output_context,
+            ) from e
 
         stdout = out.decode("utf-8", errors="replace")
         stderr = err.decode("utf-8", errors="replace")
-        if proc.returncode != 0:
-            raise HandlerError(
-                f"terminal command failed rc={proc.returncode}: {stderr[:500]}"
-            )
-        return {
+        duration_ms = int((time.monotonic() - started) * 1000)
+        result = {
+            **output_context,
+            "exit_code": proc.returncode,
             "returncode": proc.returncode,
             "stdout": stdout[-8000:],
             "stderr": stderr[-8000:],
+            "duration_ms": duration_ms,
             "truncated": len(stdout) > 8000 or len(stderr) > 8000,
-            "cwd": cwd_str,
         }
+        if proc.returncode != 0:
+            raise HandlerError(
+                f"Terminal command failed rc={proc.returncode}: {stderr[:500]}",
+                output=result,
+            )
+        return result
 
     return terminal
+
+
+def _terminal_cwd_value(action: ClientAction, cwd_roots: list[Path]) -> str:
+    cwd_raw = action.args.get("cwd")
+    if cwd_raw:
+        cwd = Path(str(cwd_raw)).expanduser().resolve()
+    elif cwd_roots:
+        cwd = cwd_roots[0]
+    else:
+        cwd = Path.cwd().resolve()
+    return str(cwd)
+
+
+def _terminal_shell(action: ClientAction) -> str:
+    target = str(action.target or "").strip()
+    if target:
+        return Path(target).name
+    shell = os.getenv("SHELL", "")
+    if shell:
+        return Path(shell).name
+    return "zsh" if os.sys.platform == "darwin" else "bash"
 
 
 def _terminal_command(action: ClientAction) -> str:

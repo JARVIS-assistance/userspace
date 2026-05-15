@@ -32,3 +32,4 @@ ui/dist/
 
 # Logs
 *.log
+ui/release/

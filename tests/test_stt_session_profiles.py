@@ -13,11 +13,56 @@ class FakeTranscriptionResult:
 
 
 class FakeEngine:
+    def __init__(self) -> None:
+        self.transcribe_calls = 0
+        self.last_pcm16_len = 0
+
     def ensure_loaded_sync(self) -> None:
         return None
 
     def transcribe_pcm16_sync(self, pcm16: bytes, sample_rate: int) -> FakeTranscriptionResult:
+        self.transcribe_calls += 1
+        self.last_pcm16_len = len(pcm16)
         return FakeTranscriptionResult(text="test")
+
+
+class FakeStreamingResult:
+    def __init__(self, text: str = "", is_final: bool = False) -> None:
+        self.text = text
+        self.is_final = is_final
+        self.confidence = 0.9
+        self.mfcc_dim = 1
+
+
+class FakeRealtime:
+    def __init__(self) -> None:
+        self.add_calls = 0
+        self.flush_calls = 0
+
+        class EngineLike:
+            sample_rate = 16000
+
+        self.stt_engine = EngineLike()
+
+    def add_audio_chunk(self, chunk) -> FakeStreamingResult:
+        self.add_calls += 1
+        return FakeStreamingResult(text="partial", is_final=False)
+
+    def flush(self) -> FakeStreamingResult:
+        self.flush_calls += 1
+        return FakeStreamingResult(text="final", is_final=True)
+
+    def reset(self) -> None:
+        return None
+
+
+class FakeRealtimeEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtime = FakeRealtime()
+
+    def create_runtime(self) -> FakeRealtime:
+        return self.runtime
 
 
 class TestSTTSessionProfiles(unittest.IsolatedAsyncioTestCase):
@@ -104,8 +149,9 @@ class TestSTTSessionProfiles(unittest.IsolatedAsyncioTestCase):
                 partial_interval_ms=600,
             )
         }
+        engine = FakeEngine()
         session = STTSession(
-            engine=FakeEngine(),
+            engine=engine,
             sample_rate=16000,
             default_profile="default",
             profiles=profiles,
@@ -116,6 +162,7 @@ class TestSTTSessionProfiles(unittest.IsolatedAsyncioTestCase):
         await session.handle_start({})
         speech_samples = [12000] * 1600
         await session.handle_audio_chunk({"samples": speech_samples, "sample_rate": 16000})
+        self.assertEqual(engine.transcribe_calls, 0)
         now = time.time()
         session._speech_start_time = now - 1.1
         session._last_speech_time = now - 1.0
@@ -124,6 +171,64 @@ class TestSTTSessionProfiles(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([event.type for event in events], ["stt.final"])
         self.assertEqual(events[0].payload["text"], "test")
+        self.assertEqual(engine.transcribe_calls, 1)
+        self.assertGreater(engine.last_pcm16_len, 0)
+
+    async def test_endpoint_first_silently_resets_long_open_turn(self) -> None:
+        session = STTSession(
+            engine=FakeEngine(),
+            sample_rate=16000,
+            default_profile="default",
+            profiles={},
+            emit_debug_state=False,
+            max_open_turn_seconds=1,
+        )
+
+        await session.handle_start({})
+        await session.handle_audio_chunk({"samples": [12000] * 1600, "sample_rate": 16000})
+        session._speech_start_time = time.time() - 2.0
+        session._last_speech_time = time.time()
+
+        events = await session.handle_audio_chunk({"samples": [12000] * 1600, "sample_rate": 16000})
+
+        self.assertEqual(events, [])
+        self.assertFalse(session._has_speech)
+        self.assertEqual(session._endpoint_buffer, [])
+
+    async def test_realtime_partial_mode_preserves_partial_events(self) -> None:
+        engine = FakeRealtimeEngine()
+        session = STTSession(
+            engine=engine,
+            sample_rate=16000,
+            default_profile="default",
+            profiles={},
+            emit_debug_state=False,
+            turn_mode="realtime_partial",
+        )
+
+        await session.handle_start({})
+        events = await session.handle_audio_chunk({"samples": [12000] * 1600, "sample_rate": 16000})
+
+        self.assertEqual([event.type for event in events], ["stt.partial"])
+        self.assertEqual(events[0].payload["text"], "partial")
+        self.assertEqual(engine.runtime.add_calls, 1)
+
+    async def test_stop_flushes_endpoint_first_open_buffer(self) -> None:
+        engine = FakeEngine()
+        session = STTSession(
+            engine=engine,
+            sample_rate=16000,
+            default_profile="default",
+            profiles={},
+            emit_debug_state=False,
+        )
+
+        await session.handle_start({})
+        await session.handle_audio_chunk({"samples": [12000] * 1600, "sample_rate": 16000})
+        events = await session.handle_stop()
+
+        self.assertEqual([event.type for event in events], ["stt.state", "stt.final"])
+        self.assertEqual(engine.transcribe_calls, 1)
 
 
 if __name__ == "__main__":

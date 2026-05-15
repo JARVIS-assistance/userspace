@@ -3,6 +3,7 @@ import SandParticles, { type ViewMode } from "./SandParticles";
 import SettingsModal from "./SettingsModal";
 import ActionConfirmModal from "./actions/ActionConfirmModal";
 import ActionFeed from "./actions/ActionFeed";
+import TerminalPanel from "./actions/TerminalPanel";
 import { cleanAssistantText, displayDoneText, displayPlanStep } from "./actions/text";
 import {
     formatProgressText,
@@ -17,13 +18,18 @@ import { useMicCapture } from "./audio/useMicCapture";
 import AssistantSubtitle from "./chrome/AssistantSubtitle";
 import BottomBar from "./chrome/BottomBar";
 import CornerActions from "./chrome/CornerActions";
+import DeepResponsePanel from "./chrome/DeepResponsePanel";
 import FloatingChatInput from "./chrome/FloatingChatInput";
+import MinimizedResponseBubble from "./chrome/MinimizedResponseBubble";
 import PlanToast from "./chrome/PlanToast";
 import SphereOverlay from "./chrome/SphereOverlay";
 import TitleBar from "./chrome/TitleBar";
+import TruncationNotice from "./chrome/TruncationNotice";
 import type { ActionsConfig } from "./settings/actionsConfig";
 import { loadLocal, saveLocal } from "./settings/storage";
 import type { SettingsData } from "./settings/types";
+import TodoPanel from "./todos/TodoPanel";
+import { useWakeWord } from "./wakeword/useWakeWord";
 import { useJarvisSocket, type WsMessage } from "./ws/useJarvisSocket";
 
 export { sharedAudioRef } from "./audio/sharedAudioRef";
@@ -32,6 +38,10 @@ export type { AudioState } from "./audio/sharedAudioRef";
 interface AppProps {
     token: string;
     onLogout: () => void;
+}
+
+function isTerminalActionType(type: string): boolean {
+    return type === "terminal" || type === "terminal.run";
 }
 
 export default function App({ token, onLogout }: AppProps) {
@@ -44,14 +54,37 @@ export default function App({ token, onLogout }: AppProps) {
     const [viewMode, setViewMode] = useState<ViewMode>("waveform");
     const [chatInput, setChatInput] = useState("");
     const [chatOpen, setChatOpen] = useState(false);
+    const [floatingInputPosition, setFloatingInputPosition] = useState<{
+        x: number;
+        y: number;
+    } | null>(null);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [todosOpen, setTodosOpen] = useState(false);
     const [settingsData, setSettingsData] = useState<SettingsData>(loadLocal);
     const [conversationActionBlock, setConversationActionBlock] = useState(false);
     const [actionIntentActive, setActionIntentActive] = useState(false);
     const [planToast, setPlanToast] = useState("");
+    const [terminalPanelActionId, setTerminalPanelActionId] = useState<string | null>(null);
+    const [deepResponsePanel, setDeepResponsePanel] = useState({
+        open: false,
+        active: false,
+        text: "",
+    });
+    const [truncationNoticeVisible, setTruncationNoticeVisible] = useState(false);
+    const [wakewordTriggering, setWakewordTriggering] = useState(false);
 
     const assistantDeltaBufferRef = useRef("");
+    const assistantRenderTextRef = useRef("");
+    const assistantRenderQueueRef = useRef("");
+    const assistantRenderTimerRef = useRef<number | null>(null);
+    const assistantFinalTextRef = useRef<string | null>(null);
+    const deepTurnActiveRef = useRef(false);
+    const deepPanelDismissedRef = useRef(false);
+    const deepResponseTextRef = useRef("");
     const chatInputRef = useRef<HTMLInputElement>(null);
+    const lastPointerRef = useRef({ x: 420, y: 80 });
+    const planToastTimerRef = useRef<number | null>(null);
+    const waitingMessageTimerRef = useRef<number | null>(null);
     const autoMinimizeActionRef = useRef<string | null>(null);
     const activePlanStepIdRef = useRef<string | null>(null);
     const greetingRequestedRef = useRef(false);
@@ -89,6 +122,167 @@ export default function App({ token, onLogout }: AppProps) {
     const stopVisible = convBusy || actionVisualActive;
     const micLocked = actionVisualActive;
     const assistantTts = useAssistantTts(settingsData.tts);
+
+    const clearPlanToastTimer = useCallback(() => {
+        if (planToastTimerRef.current !== null) {
+            window.clearTimeout(planToastTimerRef.current);
+            planToastTimerRef.current = null;
+        }
+    }, []);
+
+    const clearWaitingMessageTimer = useCallback(() => {
+        if (waitingMessageTimerRef.current !== null) {
+            window.clearInterval(waitingMessageTimerRef.current);
+            waitingMessageTimerRef.current = null;
+        }
+    }, []);
+
+    const startWaitingMessages = useCallback(() => {
+        if (waitingMessageTimerRef.current !== null) return;
+        const showNext = () => {
+            const message = waitingMessage();
+            setPlanToast(message);
+            setAssistantSubtitle(message);
+            setAssistantSubtitleDim(true);
+        };
+        showNext();
+        waitingMessageTimerRef.current = window.setInterval(showNext, 2400);
+    }, []);
+
+    const clearPlanToastAfterDelay = useCallback(() => {
+        clearPlanToastTimer();
+        planToastTimerRef.current = window.setTimeout(() => {
+            setPlanToast("");
+            planToastTimerRef.current = null;
+        }, 3000);
+    }, [clearPlanToastTimer]);
+
+    useEffect(() => {
+        const enabled = settingsData.camera.enabled === true;
+        void (window as any).jarvisBridge?.setVisionEnabled?.(enabled);
+        if (!enabled) {
+            void (window as any).jarvisBridge?.closeVisionWindow?.();
+        }
+    }, [settingsData.camera.enabled]);
+
+    const startAssistantRenderPump = useCallback(() => {
+        if (assistantRenderTimerRef.current !== null) return;
+
+        const tick = () => {
+            const queued = assistantRenderQueueRef.current;
+            if (queued) {
+                const chars = Array.from(queued);
+                const nextChar = chars.shift() || "";
+                assistantRenderQueueRef.current = chars.join("");
+                assistantRenderTextRef.current += nextChar;
+                const renderedText = cleanAssistantText(assistantRenderTextRef.current);
+                setAssistantSubtitle(renderedText);
+                assistantRenderTimerRef.current = window.setTimeout(tick, 28);
+                return;
+            }
+
+            const finalText = assistantFinalTextRef.current;
+            if (finalText !== null) {
+                assistantFinalTextRef.current = null;
+                assistantRenderTextRef.current = finalText;
+                setAssistantSubtitle(cleanAssistantText(finalText));
+            }
+            assistantRenderTimerRef.current = null;
+        };
+
+        assistantRenderTimerRef.current = window.setTimeout(tick, 0);
+    }, []);
+
+    const enqueueAssistantRenderText = useCallback((text: string) => {
+        if (!text) return;
+        assistantRenderQueueRef.current += text;
+        startAssistantRenderPump();
+    }, [startAssistantRenderPump]);
+
+    const finishAssistantRenderText = useCallback((text: string) => {
+        assistantFinalTextRef.current = text;
+        startAssistantRenderPump();
+    }, [startAssistantRenderPump]);
+
+    const resetAssistantRenderText = useCallback(() => {
+        if (assistantRenderTimerRef.current !== null) {
+            window.clearTimeout(assistantRenderTimerRef.current);
+            assistantRenderTimerRef.current = null;
+        }
+        assistantRenderTextRef.current = "";
+        assistantRenderQueueRef.current = "";
+        assistantFinalTextRef.current = null;
+        setAssistantSubtitle("");
+    }, []);
+
+    const resetDeepResponsePanel = useCallback(() => {
+        deepTurnActiveRef.current = false;
+        deepPanelDismissedRef.current = false;
+        deepResponseTextRef.current = "";
+        setDeepResponsePanel({ open: false, active: false, text: "" });
+    }, []);
+
+    const beginDeepResponsePanel = useCallback(() => {
+        deepTurnActiveRef.current = true;
+        deepPanelDismissedRef.current = false;
+        deepResponseTextRef.current = "";
+        setDeepResponsePanel({ open: false, active: true, text: "" });
+    }, []);
+
+    const appendDeepResponseText = useCallback((text: string) => {
+        if (!deepTurnActiveRef.current || !text) return;
+        deepResponseTextRef.current += text;
+        const renderedText = cleanAssistantText(deepResponseTextRef.current);
+        const shouldOpen =
+            !deepPanelDismissedRef.current
+            && renderedText.length > 0;
+        setDeepResponsePanel((prev) => ({
+            open: prev.open || shouldOpen,
+            active: true,
+            text: renderedText,
+        }));
+    }, []);
+
+    const finishDeepResponseText = useCallback((text: string) => {
+        if (!deepTurnActiveRef.current) return;
+        const renderedText =
+            cleanAssistantText(text)
+            || cleanAssistantText(deepResponseTextRef.current);
+        const shouldOpen =
+            !deepPanelDismissedRef.current
+            && renderedText.length > 0;
+        setDeepResponsePanel((prev) => ({
+            open: prev.open || shouldOpen,
+            active: false,
+            text: renderedText,
+        }));
+        deepTurnActiveRef.current = false;
+    }, []);
+
+    const enterListeningMode = useCallback(() => {
+        assistantTts.cancel();
+        setIsSpeaking(false);
+        setConvBusy(false);
+        setConversationActionBlock(false);
+        setAssistantSubtitleDim(false);
+        assistantDeltaBufferRef.current = "";
+        setTruncationNoticeVisible(false);
+        resetDeepResponsePanel();
+        resetAssistantRenderText();
+        sharedAudioRef.active = true;
+        sharedAudioRef.state = "listening";
+    }, [assistantTts.cancel, resetAssistantRenderText, resetDeepResponsePanel]);
+
+    useEffect(() => {
+        return () => {
+            if (assistantRenderTimerRef.current !== null) {
+                window.clearTimeout(assistantRenderTimerRef.current);
+                assistantRenderTimerRef.current = null;
+            }
+            clearPlanToastTimer();
+            clearWaitingMessageTimer();
+        };
+    }, [clearPlanToastTimer, clearWaitingMessageTimer]);
 
     // ── TTS events ───────────────────────────────────────
     useEffect(() => {
@@ -167,6 +361,15 @@ export default function App({ token, onLogout }: AppProps) {
         }
     }, [viewMode]);
 
+    const showTerminalAction = useCallback((actionId: string) => {
+        if (actionId) setTerminalPanelActionId(actionId);
+        const bridge = (window as any).jarvisBridge;
+        if (viewMode === "sphere" || viewMode === "minimizing") {
+            bridge?.restoreWindow?.();
+            setViewMode("restoring");
+        }
+    }, [viewMode]);
+
     const handleExternalActionFailure = useCallback((payload: Record<string, any>) => {
         const action = payload.action || {};
         const actionType = String(payload.type || action.type || "");
@@ -193,6 +396,7 @@ export default function App({ token, onLogout }: AppProps) {
 
             if (status === "queued" || status === "running" || status === "in_progress") {
                 setConversationActionBlock(false);
+                clearPlanToastTimer();
                 const description = displayPlanStep(payload);
                 if (description) {
                     setPlanToast(description);
@@ -209,9 +413,18 @@ export default function App({ token, onLogout }: AppProps) {
             ) {
                 if (isTrackedStep) {
                     setConversationActionBlock(false);
-                    setPlanToast("");
                     activePlanStepIdRef.current = null;
                     setActionIntentActive(false);
+                    if (status === "completed") {
+                        const description = displayPlanStep(payload);
+                        if (description) {
+                            setPlanToast(description);
+                        }
+                        clearPlanToastAfterDelay();
+                    } else {
+                        clearPlanToastTimer();
+                        setPlanToast("");
+                    }
                 }
                 return;
             }
@@ -220,10 +433,24 @@ export default function App({ token, onLogout }: AppProps) {
 
         if (type === "conversation.thinking") {
             setConversationActionBlock(false);
-            setPlanToast(waitingMessage());
+            clearPlanToastTimer();
             activePlanStepIdRef.current = `thinking:${String(payload.mode || "realtime")}`;
-            setAssistantSubtitle(waitingMessage());
-            setAssistantSubtitleDim(true);
+            startWaitingMessages();
+            return;
+        }
+
+        if (type === "conversation.classification") {
+            const category = String(payload.category || "").toLowerCase();
+            const mode = String(payload.mode || "").toLowerCase();
+            if (category === "deep" || mode === "deep") {
+                beginDeepResponsePanel();
+                clearWaitingMessageTimer();
+                clearPlanToastTimer();
+                setConversationActionBlock(false);
+                setPlanToast("깊이 생각해보고 있어요.");
+                setAssistantSubtitle("깊이 생각해보고 있어요.");
+                setAssistantSubtitleDim(true);
+            }
             return;
         }
 
@@ -231,13 +458,6 @@ export default function App({ token, onLogout }: AppProps) {
             const shouldAct = payload.should_act === true;
             setConversationActionBlock(false);
             setActionIntentActive(shouldAct);
-            if (shouldAct) {
-                setIsSpeaking(true);
-                setAssistantSubtitle("진행하겠습니다!");
-                setAssistantSubtitleDim(true);
-                sharedAudioRef.state = "speaking";
-                sharedAudioRef.speakingPulse = 1;
-            }
             return;
         }
 
@@ -245,6 +465,9 @@ export default function App({ token, onLogout }: AppProps) {
             const action = payload.action || {};
             const actionId = String(payload.action_id || "");
             const actionType = String(action.type || "");
+            if (isTerminalActionType(actionType)) {
+                showTerminalAction(actionId);
+            }
             const description = String(action.description || actionType || "").trim();
             if (description && !action.requires_confirm) {
                 setIsSpeaking(true);
@@ -258,6 +481,10 @@ export default function App({ token, onLogout }: AppProps) {
             const action = payload.action || {};
             const actionId = String(payload.action_id || "");
             const actionType = String(action.type || "");
+            if (isTerminalActionType(actionType)) {
+                showTerminalAction(actionId);
+                return;
+            }
             if (
                 actionId
                 && isExternalActionType(actionType)
@@ -273,6 +500,9 @@ export default function App({ token, onLogout }: AppProps) {
             const actionId = String(payload.action_id || "");
             const actionType = String(payload.type || "");
             const description = String(payload.description || actionType || "").trim();
+            if (isTerminalActionType(actionType)) {
+                showTerminalAction(actionId);
+            }
             if (description && payload.requires_confirm !== true) {
                 setIsSpeaking(true);
                 setAssistantSubtitle(formatProgressText(description));
@@ -280,6 +510,7 @@ export default function App({ token, onLogout }: AppProps) {
             }
             if (
                 actionId
+                && !isTerminalActionType(actionType)
                 && isExternalActionType(actionType)
                 && payload.requires_confirm !== true
             ) {
@@ -314,7 +545,16 @@ export default function App({ token, onLogout }: AppProps) {
                 setActionIntentActive(false);
             }
         }
-    }, [handleExternalActionFailure, minimizeForExternalAction]);
+    }, [
+        beginDeepResponsePanel,
+        clearPlanToastAfterDelay,
+        clearPlanToastTimer,
+        clearWaitingMessageTimer,
+        handleExternalActionFailure,
+        minimizeForExternalAction,
+        showTerminalAction,
+        startWaitingMessages,
+    ]);
 
     // ── WebSocket message routing ────────────────────────
     const handleMessage = useCallback((msg: WsMessage) => {
@@ -339,41 +579,73 @@ export default function App({ token, onLogout }: AppProps) {
         const { type, payload } = msg;
         if (type === "stt.partial") {
             const text = String(payload.text || "");
-            if (text) setUserSubtitle(text);
+            if (text) {
+                enterListeningMode();
+                setUserSubtitle(text);
+            }
         } else if (type === "stt.final") {
             const text = String(payload.text || "");
             if (text) setUserSubtitle(text);
+            assistantTts.beginTurn();
             setIsSpeaking(true);
             setConvBusy(true);
             setConversationActionBlock(true);
             assistantDeltaBufferRef.current = "";
-            setAssistantSubtitle("");
+            setTruncationNoticeVisible(false);
+            resetDeepResponsePanel();
+            resetAssistantRenderText();
             setAssistantSubtitleDim(false);
             setActionIntentActive(false);
+            clearPlanToastTimer();
             setPlanToast("");
             activePlanStepIdRef.current = null;
         } else if (type === "stt.state") {
             setSttState(String(payload.status || payload.state || "idle"));
         } else if (type === "chat.delta" || type === "conversation.delta") {
             setConversationActionBlock(false);
-            assistantDeltaBufferRef.current += String(payload.text || "");
-            setAssistantSubtitle(cleanAssistantText(assistantDeltaBufferRef.current));
-            setAssistantSubtitleDim(false);
+            clearWaitingMessageTimer();
+            setPlanToast("");
+            const deltaText = String(payload.text || "");
+            assistantDeltaBufferRef.current += deltaText;
+            assistantTts.pushChunk(deltaText);
+            if (deepTurnActiveRef.current) {
+                appendDeepResponseText(deltaText);
+                setAssistantSubtitle("");
+                setAssistantSubtitleDim(false);
+            } else {
+                enqueueAssistantRenderText(deltaText);
+                setAssistantSubtitleDim(false);
+            }
             sharedAudioRef.speakingPulse = 1;
+        } else if (type === "conversation.truncated") {
+            setConversationActionBlock(false);
+            setTruncationNoticeVisible(true);
         } else if (type === "chat.done" || type === "conversation.done") {
+            clearWaitingMessageTimer();
             setConversationActionBlock(false);
             setActionIntentActive(false);
-            setPlanToast("");
+            if (planToastTimerRef.current === null) {
+                setPlanToast("");
+            }
             activePlanStepIdRef.current = null;
             const doneText = displayDoneText(payload);
             const spokenText =
                 cleanAssistantText(String(payload.text || "")) ||
                 cleanAssistantText(assistantDeltaBufferRef.current) ||
                 doneText;
-            setAssistantSubtitle(doneText);
+            const wasDeepTurn = deepTurnActiveRef.current;
+            finishDeepResponseText(spokenText);
+            if (payload.truncated === true) {
+                setTruncationNoticeVisible(true);
+            }
+            if (wasDeepTurn) {
+                resetAssistantRenderText();
+            } else {
+                finishAssistantRenderText(doneText);
+            }
             setAssistantSubtitleDim(false);
             assistantDeltaBufferRef.current = "";
-            assistantTts.speak(spokenText);
+            assistantTts.finishTurn(spokenText);
         } else if (type === "conversation.state") {
             const state = String(payload.state || "idle");
             if (state === "speaking") {
@@ -384,9 +656,9 @@ export default function App({ token, onLogout }: AppProps) {
                 setConvBusy(true);
                 setConversationActionBlock(false);
                 setIsSpeaking(true);
-                setAssistantSubtitle((current) => current || waitingMessage());
-                setAssistantSubtitleDim(true);
+                startWaitingMessages();
             } else if (state === "idle") {
+                clearWaitingMessageTimer();
                 setIsSpeaking(false);
                 setConvBusy(false);
                 setConversationActionBlock(false);
@@ -398,22 +670,46 @@ export default function App({ token, onLogout }: AppProps) {
                 sharedAudioRef.state = "listening";
             }
         } else if (type === "conversation.cancelled") {
+            clearWaitingMessageTimer();
             setIsSpeaking(false);
             setConvBusy(false);
             setConversationActionBlock(false);
             setActionIntentActive(false);
+            clearPlanToastTimer();
             setPlanToast("");
             activePlanStepIdRef.current = null;
             setAssistantSubtitleDim(false);
             assistantDeltaBufferRef.current = "";
+            setTruncationNoticeVisible(false);
+            resetDeepResponsePanel();
+            resetAssistantRenderText();
             sharedAudioRef.state = "idle";
             assistantTts.cancel();
+        } else if (type === "conversation.barge_in") {
+            enterListeningMode();
         }
-    }, [actionState, applyActionUiSideEffects, assistantTts]);
+    }, [
+        actionState,
+        appendDeepResponseText,
+        applyActionUiSideEffects,
+        assistantTts,
+        beginDeepResponsePanel,
+        clearPlanToastTimer,
+        clearWaitingMessageTimer,
+        enterListeningMode,
+        enqueueAssistantRenderText,
+        finishDeepResponseText,
+        finishAssistantRenderText,
+        resetDeepResponsePanel,
+        resetAssistantRenderText,
+        startWaitingMessages,
+        setTruncationNoticeVisible,
+    ]);
 
     const { status: wsStatus, sendEvent, wsRef } = useJarvisSocket({
         token,
         onMessage: handleMessage,
+        onUnauthorized: onLogout,
     });
 
     // sendEvent를 ref로 노출 — useActionState/respondConfirm이 이를 통해 송신
@@ -428,18 +724,75 @@ export default function App({ token, onLogout }: AppProps) {
     }, [sendEvent, wsStatus]);
 
     const mic = useMicCapture({ sendEvent, wsRef });
+    const wakewordReady =
+        settingsData.wakeword.enabled
+        && settingsData.wakeword.samples.length >= settingsData.wakeword.requiredSamples;
+    const wakewordStandbyEnabled =
+        wakewordReady
+        && !wakewordTriggering
+        && !mic.active
+        && !convBusy
+        && !actionVisualActive
+        && !chatOpen
+        && !todosOpen
+        && !settingsOpen;
+
+    const handleWakewordDetected = useCallback(() => {
+        if (wakewordTriggering || mic.active) return;
+        setWakewordTriggering(true);
+        setIsSpeaking(true);
+        setAssistantSubtitle("듣고 있어요.");
+        setAssistantSubtitleDim(false);
+        setChatOpen(false);
+        setFloatingInputPosition(null);
+        const bridge = (window as any).jarvisBridge;
+        if (viewMode === "sphere" || viewMode === "minimizing") {
+            bridge?.restoreWindow?.();
+            setViewMode("restoring");
+        }
+        window.setTimeout(() => {
+            void mic.start();
+            window.setTimeout(() => setWakewordTriggering(false), 1200);
+        }, viewMode === "sphere" || viewMode === "minimizing" ? 500 : 120);
+    }, [mic, viewMode, wakewordTriggering]);
+
+    const wakeword = useWakeWord({
+        config: settingsData.wakeword,
+        enabled: wakewordStandbyEnabled,
+        onDetected: handleWakewordDetected,
+    });
+
+    useEffect(() => {
+        if (!wakewordStandbyEnabled) return;
+        if (viewMode !== "waveform" && viewMode !== "restoring") return;
+        const timer = window.setTimeout(async () => {
+            const bridge = (window as any).jarvisBridge;
+            if (bridge?.minimizeNow) {
+                await bridge.minimizeNow();
+                setViewMode("sphere");
+            } else {
+                bridge?.minimizeWindow?.();
+            }
+        }, 900);
+        return () => window.clearTimeout(timer);
+    }, [viewMode, wakewordStandbyEnabled]);
 
     // Mic state side-effect: stt state
     useEffect(() => {
-        if (mic.active) setSttState("listening");
-        else setSttState("idle");
-    }, [mic.active]);
+        if (mic.active) {
+            enterListeningMode();
+            setSttState("listening");
+        } else {
+            setSttState("idle");
+        }
+    }, [enterListeningMode, mic.active]);
 
     const handleChatSubmit = useCallback(() => {
         if (inputLocked) return;
         const text = chatInput.trim();
         if (!text) return;
         setUserSubtitle(text);
+        assistantTts.beginTurn();
         setIsSpeaking(true);
         setConvBusy(true);
         if (convBusy || actionVisualActive) {
@@ -447,14 +800,27 @@ export default function App({ token, onLogout }: AppProps) {
         }
         setConversationActionBlock(true);
         assistantDeltaBufferRef.current = "";
-        setAssistantSubtitle("");
+        setTruncationNoticeVisible(false);
+        resetAssistantRenderText();
         setAssistantSubtitleDim(false);
         setActionIntentActive(false);
+        clearPlanToastTimer();
+        clearWaitingMessageTimer();
         setPlanToast("");
         activePlanStepIdRef.current = null;
         sendEvent("chat.request", { text });
         setChatInput("");
-    }, [chatInput, inputLocked, sendEvent, convBusy, actionVisualActive]);
+    }, [
+        actionVisualActive,
+        assistantTts,
+        chatInput,
+        clearPlanToastTimer,
+        clearWaitingMessageTimer,
+        convBusy,
+        inputLocked,
+        resetAssistantRenderText,
+        sendEvent,
+    ]);
 
     const handleStop = useCallback(() => {
         if (!convBusy) return;
@@ -464,8 +830,35 @@ export default function App({ token, onLogout }: AppProps) {
         setConvBusy(false);
         setIsSpeaking(false);
         setAssistantSubtitleDim(false);
+        setTruncationNoticeVisible(false);
+        resetAssistantRenderText();
         assistantTts.cancel();
-    }, [assistantTts, convBusy, sendEvent]);
+    }, [assistantTts, convBusy, resetAssistantRenderText, sendEvent]);
+
+    const openChatAtMouse = useCallback(async () => {
+        if (viewMode !== "sphere") {
+            setChatOpen(true);
+            setTimeout(() => chatInputRef.current?.focus(), 50);
+            return;
+        }
+
+        const placed = await (window as any).jarvisBridge?.placeSphereInput?.();
+        const local = placed?.local;
+        if (
+            local
+            && Number.isFinite(Number(local.x))
+            && Number.isFinite(Number(local.y))
+        ) {
+            setFloatingInputPosition({
+                x: Number(local.x),
+                y: Number(local.y),
+            });
+        } else {
+            setFloatingInputPosition(lastPointerRef.current);
+        }
+        setChatOpen(true);
+        setTimeout(() => chatInputRef.current?.focus(), 50);
+    }, [viewMode]);
 
     // ── Keyboard shortcuts ──────────────────────────────
     useEffect(() => {
@@ -480,8 +873,7 @@ export default function App({ token, onLogout }: AppProps) {
                 if (tag === "INPUT" || tag === "TEXTAREA") return;
                 e.preventDefault();
                 if (inputLocked) return;
-                setChatOpen(true);
-                setTimeout(() => chatInputRef.current?.focus(), 50);
+                void openChatAtMouse();
             }
             if (e.key === "Escape") {
                 // 응답/추론 중엔 STOP 우선
@@ -493,12 +885,33 @@ export default function App({ token, onLogout }: AppProps) {
                 if (chatOpen) {
                     setChatOpen(false);
                     setChatInput("");
+                    setFloatingInputPosition(null);
+                    if (viewMode === "sphere") {
+                        void (window as any).jarvisBridge?.resetSpherePosition?.();
+                    }
                 }
             }
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [mic, chatOpen, convBusy, handleStop, inputLocked, micLocked, viewMode]);
+    }, [
+        mic,
+        chatOpen,
+        convBusy,
+        handleStop,
+        inputLocked,
+        micLocked,
+        openChatAtMouse,
+        viewMode,
+    ]);
+
+    useEffect(() => {
+        const onPointerMove = (e: PointerEvent) => {
+            lastPointerRef.current = { x: e.clientX, y: e.clientY };
+        };
+        window.addEventListener("pointermove", onPointerMove);
+        return () => window.removeEventListener("pointermove", onPointerMove);
+    }, []);
 
     // ── Window controls ──────────────────────────────────
     const handleMinimizeDone = useCallback(() => {
@@ -508,8 +921,19 @@ export default function App({ token, onLogout }: AppProps) {
     const handleMinimize = () =>
         (window as any).jarvisBridge?.minimizeWindow?.();
     const handleClose = () => (window as any).jarvisBridge?.closeWindow?.();
-    const handleSphereClick = () =>
+    const handleSphereClick = () => {
+        window.focus();
+    };
+    const handleSphereDoubleClick = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragInfo.current.isDragging = false;
+        document.body.style.cursor = "";
+        setChatOpen(false);
+        setFloatingInputPosition(null);
+        setViewMode("restoring");
         (window as any).jarvisBridge?.restoreWindow?.();
+    };
 
     // ── Manual Drag Logic for Sphere Mode ────────────────
     const dragInfo = useRef({
@@ -525,9 +949,12 @@ export default function App({ token, onLogout }: AppProps) {
 
     const handleDragStart = async (e: React.MouseEvent) => {
         if (viewMode !== "sphere") return;
+        if (e.button !== 0) return;
+        e.preventDefault();
         const bridge = (window as any).jarvisBridge;
         const bounds = await bridge.getWindowBounds();
         if (!bounds) return;
+        document.body.style.cursor = "grabbing";
 
         dragInfo.current = {
             isDragging: true,
@@ -572,6 +999,7 @@ export default function App({ token, onLogout }: AppProps) {
                 handleSphereClick();
             }
             dragInfo.current.isDragging = false;
+            document.body.style.cursor = "";
         };
 
         window.addEventListener("mousemove", handleMouseMove);
@@ -579,13 +1007,55 @@ export default function App({ token, onLogout }: AppProps) {
         return () => {
             window.removeEventListener("mousemove", handleMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
+            document.body.style.cursor = "";
         };
     }, [handleSphereClick]);
 
     const isNormal = viewMode === "waveform" || viewMode === "restoring";
     const isSphere = viewMode === "sphere";
     const isMinimizing = viewMode === "minimizing";
+    const minimizedFeedVisible = actionState.state.feed.some(
+        (entry) => !(entry.kind === "step" && entry.status === "completed"),
+    );
+    const minimizedBubbleVisible =
+        Boolean(assistantSubtitle.trim())
+        || Boolean(planToast.trim())
+        || minimizedFeedVisible;
+    const terminalPanelEntry = terminalPanelActionId
+        ? actionState.state.feed.find((entry) => entry.action_id === terminalPanelActionId) ?? null
+        : null;
     const bgColor = isSphere || isMinimizing ? "transparent" : "#000";
+
+    useEffect(() => {
+        if (!isSphere) return;
+        const bridge = (window as any).jarvisBridge;
+        const targetWidth = chatOpen || minimizedBubbleVisible ? 560 : 160;
+        const targetHeight = chatOpen ? 260 : 160;
+        let cancelled = false;
+
+        const resizeSphereWindow = async () => {
+            const bounds = await bridge?.getWindowBounds?.();
+            if (!bounds || cancelled) return;
+            if (
+                Math.abs(Number(bounds.width) - targetWidth) < 2
+                && Math.abs(Number(bounds.height) - targetHeight) < 2
+            ) {
+                return;
+            }
+            const right = Number(bounds.x) + Number(bounds.width);
+            bridge?.moveWindow?.({
+                x: Math.round(right - targetWidth),
+                y: Number(bounds.y),
+                width: targetWidth,
+                height: targetHeight,
+            });
+        };
+
+        void resizeSphereWindow();
+        return () => {
+            cancelled = true;
+        };
+    }, [chatOpen, isSphere, minimizedBubbleVisible]);
 
     return (
         <div
@@ -614,7 +1084,19 @@ export default function App({ token, onLogout }: AppProps) {
                     subtitle=""
                     micActive={mic.active}
                     onSphereClick={handleSphereClick}
+                    onSphereDoubleClick={handleSphereDoubleClick}
                     onMouseDown={handleDragStart}
+                />
+            )}
+
+            {isSphere && (
+                <MinimizedResponseBubble
+                    conversationText={assistantSubtitle}
+                    conversationDim={assistantSubtitleDim}
+                    planText={planToast}
+                    feed={actionState.state.feed}
+                    chatOpen={chatOpen}
+                    inputPosition={floatingInputPosition}
                 />
             )}
 
@@ -625,8 +1107,31 @@ export default function App({ token, onLogout }: AppProps) {
                 />
             )}
 
+            {/*
             {isNormal && (
                 <PlanToast text={planToast} chatOpen={chatOpen} />
+            )}
+            */}
+
+            {isNormal && terminalPanelEntry && (
+                <TerminalPanel
+                    entry={terminalPanelEntry}
+                    onClose={() => setTerminalPanelActionId(null)}
+                />
+            )}
+
+            {isNormal && !terminalPanelEntry && deepResponsePanel.open && (
+                <DeepResponsePanel
+                    text={deepResponsePanel.text}
+                    active={deepResponsePanel.active}
+                    onClose={() => {
+                        deepPanelDismissedRef.current = true;
+                        setDeepResponsePanel((prev) => ({
+                            ...prev,
+                            open: false,
+                        }));
+                    }}
+                />
             )}
 
             {isNormal && (
@@ -649,6 +1154,7 @@ export default function App({ token, onLogout }: AppProps) {
                 <FloatingChatInput
                     ref={chatInputRef}
                     value={chatInput}
+                    position={floatingInputPosition}
                     stopVisible={stopVisible}
                     inputDisabled={inputLocked}
                     onChange={setChatInput}
@@ -660,9 +1166,16 @@ export default function App({ token, onLogout }: AppProps) {
             {isNormal && (
                 <CornerActions
                     onLogout={onLogout}
+                    onOpenTodos={() => setTodosOpen(true)}
                     onOpenSettings={() => setSettingsOpen(true)}
                 />
             )}
+
+            <TodoPanel
+                open={todosOpen}
+                token={token}
+                onClose={() => setTodosOpen(false)}
+            />
 
             <SettingsModal
                 open={settingsOpen}
@@ -702,6 +1215,18 @@ export default function App({ token, onLogout }: AppProps) {
                     if (
                         accepted
                         && pending
+                        && isTerminalActionType(pending.action.type)
+                    ) {
+                        setIsSpeaking(true);
+                        setAssistantSubtitle(
+                            formatProgressText(
+                                pending.action.description || pending.action.type,
+                            ),
+                        );
+                        showTerminalAction(actionId);
+                    } else if (
+                        accepted
+                        && pending
                         && isExternalActionType(pending.action.type)
                     ) {
                         setIsSpeaking(true);
@@ -715,6 +1240,20 @@ export default function App({ token, onLogout }: AppProps) {
                     actionState.respondConfirm(actionId, accepted, reason);
                 }}
             />
+
+            {isNormal && (
+                <TruncationNotice
+                    visible={truncationNoticeVisible}
+                    onDismiss={() => setTruncationNoticeVisible(false)}
+                    onContinueDeep={() => {
+                        setTruncationNoticeVisible(false);
+                        sendEvent("chat.request", {
+                            text: "방금 답변을 자세히 이어서 설명해줘",
+                            route_override: "deep",
+                        });
+                    }}
+                />
+            )}
         </div>
     );
 }

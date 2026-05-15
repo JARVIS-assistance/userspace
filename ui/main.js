@@ -3,24 +3,33 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const WebSocketClient = require('ws');
 
 const USERSPACE_HOST = process.env.USERSPACE_HOST || '127.0.0.1';
 const USERSPACE_PORT = Number(process.env.USERSPACE_PORT || '8765');
 const AUTH_API_BASE = (process.env.AUTH_API_BASE || 'http://127.0.0.1:8001').replace(/\/+$/, '');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.JARVIS_GOOGLE_CLIENT_ID || '';
 const USERSPACE_WS_URL = process.env.USERSPACE_WS_URL || `ws://${USERSPACE_HOST}:${USERSPACE_PORT}/ws`;
 const USERSPACE_WS_AUTH_DISABLED =
   String(process.env.JARVIS_USERSPACE_AUTH_DISABLED || '').toLowerCase();
 const USERSPACE_WS_AUTH_DISABLED_BOOL =
   USERSPACE_WS_AUTH_DISABLED === '1' || USERSPACE_WS_AUTH_DISABLED === 'true' || USERSPACE_WS_AUTH_DISABLED === 'yes' || USERSPACE_WS_AUTH_DISABLED === 'on';
+const DEFAULT_VISION_DIR = '/Users/chawonje/Desktop/Workspace/project/JARVIS/jarvis_vision';
 
 app.setName('JARVIS Userspace');
 app.setPath('userData', path.join(app.getPath('appData'), 'JARVIS Userspace'));
 
 const SPHERE_SIZE = 100;
 const SPHERE_MARGIN = 24;
-const SPHERE_WINDOW_W = 560; // wide enough for speech bubble
+const SPHERE_WINDOW_W = 160;
 const SPHERE_WINDOW_H = 160;
 let mainWindow = null;
+let visionWindow = null;
+let visionEnabled = false;
+let visionPythonRuntime = {
+  child: null,
+  cwd: '',
+};
 let lastSphereBounds = null; // 아이콘 모드의 마지막 위치 저장
 let isSphereMode = false;
 const activeTtsStreams = new Map();
@@ -30,6 +39,14 @@ let gptSovitsRuntime = {
   config: null,
   externallyManaged: false,
   starting: null,
+};
+let qwen3LocalRuntime = {
+  child: null,
+  key: '',
+  lineBuffer: '',
+  requests: new Map(),
+  starting: null,
+  nextId: 0,
 };
 
 function requestMacOSActionPermissions() {
@@ -132,13 +149,25 @@ function transitionToSphere() {
   mainWindow.setAlwaysOnTop(true, 'floating');
   mainWindow.setResizable(false);
   mainWindow.setHasShadow(false);
+  mainWindow.setIgnoreMouseEvents(false);
   if (mainWindow.isMaximized()) {
     mainWindow.unmaximize();
   }
 
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   if (lastSphereBounds) {
     // 마지막으로 드래그해서 놓은 위치가 있으면 그 위치로 이동
-    mainWindow.setBounds(lastSphereBounds, true);
+    const right = lastSphereBounds.x + lastSphereBounds.width;
+    mainWindow.setBounds({
+      x: clamp(
+        right - SPHERE_WINDOW_W,
+        workArea.x,
+        workArea.x + workArea.width - SPHERE_WINDOW_W,
+      ),
+      y: clamp(lastSphereBounds.y, workArea.y, workArea.y + workArea.height - SPHERE_WINDOW_H),
+      width: SPHERE_WINDOW_W,
+      height: SPHERE_WINDOW_H,
+    }, true);
   } else {
     // 없으면 기본 위치(우측 상단)로 이동
     mainWindow.setBounds({
@@ -166,12 +195,118 @@ function restoreFromSphere(text) {
   mainWindow.setAlwaysOnTop(false);
   mainWindow.setResizable(true);
   mainWindow.setHasShadow(true);
+  mainWindow.setIgnoreMouseEvents(false);
   mainWindow.maximize();
 
   // Wait for window resize to settle, then tell renderer to fade in waveform
   setTimeout(() => {
     if (mainWindow) mainWindow.webContents.send('window:restore-from-sphere', text);
   }, 50);
+}
+
+function getVisionPythonPath() {
+  const visionDir = getVisionRuntimeDir();
+  const venvPython = path.join(visionDir, '.venv', 'bin', 'python');
+  if (fs.existsSync(venvPython)) return venvPython;
+  return process.env.JARVIS_VISION_PYTHON || 'python3';
+}
+
+function getVisionRuntimeDir() {
+  if (visionPythonRuntime.cwd && fs.existsSync(path.join(visionPythonRuntime.cwd, 'main.py'))) {
+    return visionPythonRuntime.cwd;
+  }
+  const candidates = [];
+  if (process.env.JARVIS_VISION_DIR) {
+    candidates.push(process.env.JARVIS_VISION_DIR);
+  }
+  candidates.push(DEFAULT_VISION_DIR);
+
+  const roots = [
+    __dirname,
+    process.cwd(),
+    app.getAppPath?.(),
+    path.dirname(app.getPath('exe')),
+  ].filter(Boolean);
+  for (const root of roots) {
+    let current = path.resolve(root);
+    for (let depth = 0; depth < 8; depth += 1) {
+      candidates.push(path.join(current, 'jarvis_vision'));
+      candidates.push(path.join(current, '..', 'jarvis_vision'));
+      current = path.dirname(current);
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'main.py'))) {
+      visionPythonRuntime.cwd = candidate;
+      return candidate;
+    }
+  }
+  return candidates[0] || path.resolve(__dirname, '..', '..', 'jarvis_vision');
+}
+
+function pipeVisionOutput(stream, prefix) {
+  if (!stream) return;
+  stream.on('data', (chunk) => {
+    const text = chunk.toString();
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim()) process.stdout.write(`[vision:${prefix}] ${line}\n`);
+    }
+  });
+}
+
+function stopVisionRuntime() {
+  const child = visionPythonRuntime.child;
+  visionPythonRuntime.child = null;
+  if (!child || child.killed) return true;
+  try {
+    child.kill('SIGTERM');
+    setTimeout(() => {
+      if (!child.killed) child.kill('SIGKILL');
+    }, 2500);
+  } catch (error) {
+    process.stderr.write(`[vision] stop failed: ${String(error)}\n`);
+    return false;
+  }
+  return true;
+}
+
+function startVisionRuntime(config = {}) {
+  if (config.enabled !== true || !visionEnabled) {
+    stopVisionRuntime();
+    return { ok: false, error: 'vision disabled' };
+  }
+  if (visionPythonRuntime.child && visionPythonRuntime.child.exitCode === null) {
+    return { ok: true, alreadyRunning: true };
+  }
+  const visionDir = getVisionRuntimeDir();
+  if (!fs.existsSync(path.join(visionDir, 'main.py'))) {
+    return { ok: false, error: `missing vision runtime: ${visionDir}` };
+  }
+
+  const pythonPath = getVisionPythonPath();
+  const child = spawn(pythonPath, ['main.py'], {
+    cwd: visionDir,
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  visionPythonRuntime.child = child;
+  pipeVisionOutput(child.stdout, 'out');
+  pipeVisionOutput(child.stderr, 'err');
+  child.on('close', (code, signal) => {
+    if (visionPythonRuntime.child === child) {
+      visionPythonRuntime.child = null;
+    }
+    process.stdout.write(`[vision] python exited code=${code} signal=${signal}\n`);
+  });
+  child.on('error', (error) => {
+    if (visionPythonRuntime.child === child) {
+      visionPythonRuntime.child = null;
+    }
+    process.stderr.write(`[vision] python launch failed: ${String(error)}\n`);
+  });
+  process.stdout.write(`[vision] python started pid=${child.pid} cwd=${visionDir} python=${pythonPath}\n`);
+  return { ok: true, pid: child.pid, pythonPath, cwd: visionDir };
 }
 
 // ── IPC handlers ───────────────────────────────────────
@@ -181,6 +316,7 @@ ipcMain.handle('userspace:get-config', async () => {
     port: USERSPACE_PORT,
     baseUrl: `http://${USERSPACE_HOST}:${USERSPACE_PORT}`,
     authApiBase: AUTH_API_BASE,
+    googleClientId: GOOGLE_CLIENT_ID,
     wsUrl: USERSPACE_WS_URL,
     authDisabled: USERSPACE_WS_AUTH_DISABLED_BOOL,
   };
@@ -208,7 +344,7 @@ ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
   const model = String(payload.model || '').trim();
 
   if (!text) return { ok: false, error: 'missing text' };
-  if (!['chatterbox', 'vibevoice', 'gpt-sovits'].includes(provider) && !apiKey) return { ok: false, error: 'missing api key' };
+  if (!['chatterbox', 'vibevoice', 'gpt-sovits', 'qwen3-local'].includes(provider) && !apiKey) return { ok: false, error: 'missing api key' };
 
   try {
     let res;
@@ -231,6 +367,8 @@ ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
       });
     } else if (provider === 'gpt-sovits') {
       return await synthesizeGptSovitsNonStreaming(payload);
+    } else if (provider === 'qwen3-local') {
+      return await synthesizeQwen3LocalNonStreaming(payload);
     } else if (provider === 'elevenlabs') {
       const voice = voiceId || 'JBFqnCBsd6RMkjVDRZzb';
       res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}`, {
@@ -300,14 +438,27 @@ ipcMain.handle('tts:synthesize-stream', async (event, payload = {}) => {
 
   const controller = new AbortController();
   activeTtsStreams.set(requestId, controller);
+  let provider = '';
 
   try {
-    const provider = String(payload.provider || '');
+    provider = String(payload.provider || '');
     const text = String(payload.text || '').trim();
-    if (provider !== 'gpt-sovits') {
+    if (!['gpt-sovits', 'qwen3-realtime', 'qwen3-local'].includes(provider)) {
       throw new Error(`streaming unsupported provider: ${provider}`);
     }
     if (!text) throw new Error('missing text');
+
+    if (provider === 'qwen3-realtime') {
+      await streamQwen3Realtime(payload, sendEvent, controller.signal);
+      sendEvent({ type: 'end' });
+      return { ok: true };
+    }
+
+    if (provider === 'qwen3-local') {
+      await streamQwen3Local(payload, sendEvent, controller.signal);
+      sendEvent({ type: 'end' });
+      return { ok: true };
+    }
 
     const config = normalizeGptSovitsConfig(payload);
     await ensureGptSovitsServer(config);
@@ -334,18 +485,20 @@ ipcMain.handle('tts:synthesize-stream', async (event, payload = {}) => {
     }
     const message = error instanceof Error ? error.message : String(error);
 
-    try {
-      const fallback = await synthesizeGptSovitsNonStreaming(payload);
-      if (fallback?.ok) {
-        sendEvent({
-          type: 'fallback',
-          mimeType: fallback.mimeType,
-          audioBase64: fallback.audioBase64,
-        });
-        sendEvent({ type: 'end' });
-        return { ok: true, fallback: true };
-      }
-    } catch (_) {}
+    if (provider === 'gpt-sovits') {
+      try {
+        const fallback = await synthesizeGptSovitsNonStreaming(payload);
+        if (fallback?.ok) {
+          sendEvent({
+            type: 'fallback',
+            mimeType: fallback.mimeType,
+            audioBase64: fallback.audioBase64,
+          });
+          sendEvent({ type: 'end' });
+          return { ok: true, fallback: true };
+        }
+      } catch (_) {}
+    }
 
     sendEvent({ type: 'error', error: message });
     return { ok: false, error: message };
@@ -358,6 +511,419 @@ ipcMain.on('tts:stream-cancel', (event, requestId) => {
   const controller = activeTtsStreams.get(String(requestId || ''));
   if (controller) controller.abort();
 });
+
+function normalizeQwen3Config(payload = {}) {
+  const region = String(payload.qwen3Region || 'international').trim().toLowerCase();
+  return {
+    apiKey: String(payload.apiKey || process.env.DASHSCOPE_API_KEY || '').trim(),
+    region: region === 'china' ? 'china' : 'international',
+    model: String(payload.model || 'qwen3-tts-instruct-flash-realtime').trim() || 'qwen3-tts-instruct-flash-realtime',
+    voice: String(payload.voiceId || 'Cherry').trim() || 'Cherry',
+    languageType: String(payload.qwen3LanguageType || 'Korean').trim() || 'Korean',
+    instructions: String(payload.qwen3Instructions || '').trim(),
+    sampleRate: normalizeQwen3SampleRate(payload.qwen3SampleRate),
+  };
+}
+
+function normalizeQwen3LocalConfig(payload = {}) {
+  return {
+    pythonPath: String(payload.qwen3LocalPythonPath || process.env.QWEN3_LOCAL_PYTHON || process.env.PYTHON || 'python3').trim() || 'python3',
+    model: String(payload.model || 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit').trim() || 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit',
+    voice: String(payload.voiceId || 'Chelsie').trim() || 'Chelsie',
+    languageType: String(payload.qwen3LanguageType || 'Korean').trim() || 'Korean',
+    instructions: String(payload.qwen3Instructions || '').trim(),
+    sampleRate: normalizeQwen3SampleRate(payload.qwen3SampleRate),
+  };
+}
+
+function normalizeQwen3SampleRate(value) {
+  const sampleRate = Number(value);
+  return [8000, 16000, 24000, 48000].includes(sampleRate) ? sampleRate : 24000;
+}
+
+function qwen3Endpoint(config) {
+  const host = config.region === 'china'
+    ? 'dashscope.aliyuncs.com'
+    : 'dashscope-intl.aliyuncs.com';
+  return `wss://${host}/api-ws/v1/realtime?model=${encodeURIComponent(config.model)}`;
+}
+
+function streamQwen3Realtime(payload, sendEvent, signal) {
+  const config = normalizeQwen3Config(payload);
+  if (!config.apiKey) throw new Error('Qwen3 Realtime API key is required');
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let completed = false;
+    let started = false;
+    let receivedAudio = false;
+    const ws = new WebSocketClient(qwen3Endpoint(config), {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    });
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const sendJson = (message) => {
+      if (ws.readyState === WebSocketClient.OPEN) {
+        ws.send(JSON.stringify({
+          event_id: `jarvis_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          ...message,
+        }));
+      }
+    };
+    const abort = () => {
+      completed = true;
+      try { ws.close(1000, 'cancelled'); } catch (_) {}
+      finish();
+    };
+
+    signal.addEventListener('abort', abort, { once: true });
+    ws.on('open', () => {
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+
+      sendEvent({
+        type: 'start',
+        sampleRate: config.sampleRate,
+        channels: 1,
+        bitsPerSample: 16,
+      });
+      started = true;
+
+      const session = {
+        voice: config.voice,
+        mode: 'commit',
+        response_format: 'pcm',
+        sample_rate: config.sampleRate,
+        language_type: config.languageType,
+      };
+      if (config.instructions) {
+        session.instructions = config.instructions;
+        session.optimize_instructions = true;
+      }
+
+      sendJson({ type: 'session.update', session });
+      sendJson({ type: 'input_text_buffer.append', text: String(payload.text || '').trim() });
+      sendJson({ type: 'input_text_buffer.commit' });
+      sendJson({ type: 'session.finish' });
+    });
+
+    ws.on('message', (data) => {
+      if (signal.aborted) return;
+      let message;
+      try {
+        message = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data));
+      } catch (_) {
+        return;
+      }
+
+      if (message.type === 'error' || message.error) {
+        const detail = message.error?.message || message.error || message.message || JSON.stringify(message);
+        fail(new Error(`Qwen3 Realtime error: ${detail}`));
+        try { ws.close(); } catch (_) {}
+        return;
+      }
+
+      if (message.type === 'response.audio.delta') {
+        const audioBase64 = message.delta || message.audio || message.data || '';
+        if (audioBase64) {
+          receivedAudio = true;
+          if (!started) {
+            sendEvent({
+              type: 'start',
+              sampleRate: config.sampleRate,
+              channels: 1,
+              bitsPerSample: 16,
+            });
+            started = true;
+          }
+          sendEvent({ type: 'chunk', audioBase64 });
+        }
+        return;
+      }
+
+      if (
+        message.type === 'response.done' ||
+        message.type === 'response.audio.done' ||
+        message.type === 'session.finished'
+      ) {
+        completed = true;
+        finish();
+        try { ws.close(1000, 'done'); } catch (_) {}
+      }
+    });
+
+    ws.on('error', (error) => {
+      if (signal.aborted) return;
+      fail(error);
+    });
+
+    ws.on('close', (code, reason) => {
+      signal.removeEventListener('abort', abort);
+      if (settled) return;
+      if (signal.aborted || completed || receivedAudio) {
+        finish();
+        return;
+      }
+      fail(new Error(`Qwen3 Realtime WebSocket closed before audio: ${code} ${reason || ''}`.trim()));
+    });
+  });
+}
+
+async function streamQwen3Local(payload, sendEvent, signal) {
+  const config = normalizeQwen3LocalConfig(payload);
+  const child = await ensureQwen3LocalServer(config);
+  const requestId = `qwen3-local-${++qwen3LocalRuntime.nextId}`;
+  const text = String(payload.text || '').trim();
+
+  return new Promise((resolve, reject) => {
+    const request = {
+      sendEvent,
+      resolve,
+      reject,
+      cancelled: false,
+    };
+    qwen3LocalRuntime.requests.set(requestId, request);
+
+    const abort = () => {
+      request.cancelled = true;
+      qwen3LocalRuntime.requests.delete(requestId);
+      restartQwen3LocalServer();
+      resolve();
+    };
+    signal.addEventListener('abort', abort, { once: true });
+
+    try {
+      child.stdin.write(JSON.stringify({
+        id: requestId,
+        text,
+        model: config.model,
+        voice: config.voice,
+        language: config.languageType,
+        instructions: config.instructions,
+        sampleRate: config.sampleRate,
+      }) + '\n');
+    } catch (error) {
+      signal.removeEventListener('abort', abort);
+      qwen3LocalRuntime.requests.delete(requestId);
+      reject(error);
+    }
+
+    request.resolve = () => {
+      signal.removeEventListener('abort', abort);
+      qwen3LocalRuntime.requests.delete(requestId);
+      resolve();
+    };
+    request.reject = (error) => {
+      signal.removeEventListener('abort', abort);
+      qwen3LocalRuntime.requests.delete(requestId);
+      reject(error);
+    };
+  });
+}
+
+function ensureQwen3LocalServer(config) {
+  const key = `${config.pythonPath}|${config.model}`;
+  if (qwen3LocalRuntime.child && qwen3LocalRuntime.key === key) {
+    return Promise.resolve(qwen3LocalRuntime.child);
+  }
+  if (qwen3LocalRuntime.starting && qwen3LocalRuntime.key === key) {
+    return qwen3LocalRuntime.starting;
+  }
+  if (qwen3LocalRuntime.child) {
+    shutdownQwen3LocalServer();
+  }
+
+  qwen3LocalRuntime.key = key;
+  qwen3LocalRuntime.starting = startQwen3LocalServer(config).finally(() => {
+    qwen3LocalRuntime.starting = null;
+  });
+  return qwen3LocalRuntime.starting;
+}
+
+function startQwen3LocalServer(config) {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, '..', 'scripts', 'qwen3_local_tts_server.py');
+    const cacheRoot = path.join(__dirname, '..', '.cache');
+    const child = spawn(config.pythonPath, [scriptPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+        HF_HOME: process.env.HF_HOME || path.join(cacheRoot, 'huggingface'),
+      },
+    });
+
+    let settled = false;
+    let startupError = '';
+    qwen3LocalRuntime.child = child;
+    qwen3LocalRuntime.lineBuffer = '';
+    qwen3LocalRuntime.requests.clear();
+
+    child.stdout.on('data', (chunk) => handleQwen3LocalStdout(chunk, child, () => {
+      if (!settled) {
+        settled = true;
+        resolve(child);
+      }
+    }));
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      startupError += text;
+      process.stderr.write(`[qwen3-local] ${text}`);
+    });
+    child.on('error', (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+      rejectPendingQwen3LocalRequests(error);
+    });
+    child.on('exit', (code, signal) => {
+      if (qwen3LocalRuntime.child === child) {
+        qwen3LocalRuntime.child = null;
+      }
+      const message = new Error(startupError.trim() || `Qwen3 local worker exited code=${code} signal=${signal}`);
+      if (!settled) {
+        settled = true;
+        reject(message);
+      }
+      rejectPendingQwen3LocalRequests(message);
+      process.stderr.write(`[qwen3-local] exited code=${code} signal=${signal}\n`);
+    });
+
+    setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(child);
+      }
+    }, 3000);
+  });
+}
+
+function handleQwen3LocalStdout(chunk, child, onReady) {
+  qwen3LocalRuntime.lineBuffer += chunk.toString();
+  while (true) {
+    const newline = qwen3LocalRuntime.lineBuffer.indexOf('\n');
+    if (newline === -1) break;
+    const line = qwen3LocalRuntime.lineBuffer.slice(0, newline).trim();
+    qwen3LocalRuntime.lineBuffer = qwen3LocalRuntime.lineBuffer.slice(newline + 1);
+    if (!line) continue;
+
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (_) {
+      process.stderr.write(`[qwen3-local] ${line}\n`);
+      continue;
+    }
+    if (event.type === 'ready') {
+      onReady();
+      continue;
+    }
+
+    const request = qwen3LocalRuntime.requests.get(String(event.id || ''));
+    if (!request || request.cancelled) continue;
+
+    if (event.type === 'start') {
+      request.sendEvent({
+        type: 'start',
+        sampleRate: Number(event.sampleRate || 24000),
+        channels: Number(event.channels || 1),
+        bitsPerSample: Number(event.bitsPerSample || 16),
+      });
+    } else if (event.type === 'chunk') {
+      request.sendEvent({ type: 'chunk', audioBase64: String(event.audioBase64 || '') });
+    } else if (event.type === 'end') {
+      request.resolve();
+    } else if (event.type === 'error') {
+      request.reject(new Error(String(event.error || event.detail || 'Qwen3 local worker error')));
+    }
+  }
+}
+
+function synthesizeQwen3LocalNonStreaming(payload = {}) {
+  const chunks = [];
+  return new Promise((resolve) => {
+    const sendEvent = (event) => {
+      if (event.type === 'chunk' && event.audioBase64) {
+        chunks.push(Buffer.from(String(event.audioBase64), 'base64'));
+      }
+    };
+    streamQwen3Local(payload, sendEvent, AbortSignal.timeout(120000)).then(() => {
+      const pcm = Buffer.concat(chunks);
+      if (!pcm.length) {
+        resolve({ ok: false, error: 'Qwen3 local generated no audio' });
+        return;
+      }
+      const sampleRate = normalizeQwen3LocalConfig(payload).sampleRate;
+      resolve({
+        ok: true,
+        mimeType: 'audio/wav',
+        audioBase64: pcm16ToWavBase64(pcm, sampleRate, 1),
+      });
+    }, (error) => {
+      resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+}
+
+function pcm16ToWavBase64(pcm, sampleRate, channels) {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * channels * 2;
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(channels * 2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]).toString('base64');
+}
+
+function restartQwen3LocalServer() {
+  shutdownQwen3LocalServer();
+}
+
+function rejectPendingQwen3LocalRequests(error) {
+  for (const request of qwen3LocalRuntime.requests.values()) {
+    request.reject(error);
+  }
+  qwen3LocalRuntime.requests.clear();
+}
+
+function shutdownQwen3LocalServer() {
+  const child = qwen3LocalRuntime.child;
+  qwen3LocalRuntime.child = null;
+  qwen3LocalRuntime.lineBuffer = '';
+  if (!child) return;
+  try {
+    child.stdin.write(JSON.stringify({ type: 'exit' }) + '\n');
+  } catch (_) {}
+  setTimeout(() => {
+    if (!child.killed) {
+      try { child.kill(); } catch (_) {}
+    }
+  }, 1000);
+  try {
+    child.kill('SIGTERM');
+  } catch (_) {}
+}
 
 function normalizeGptSovitsConfig(payload = {}) {
   const repoPath = String(payload.gptSovitsRepoPath || '').trim();
@@ -610,7 +1176,7 @@ function synthesizeVibeVoice(options) {
     const scriptPath = path.join(__dirname, '..', 'scripts', 'vibevoice_realtime_tts.py');
     const outputPath = path.join(os.tmpdir(), `jarvis-vibevoice-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
     const cacheRoot = path.join(__dirname, '..', '.cache');
-    const python = process.env.VIBEVOICE_PYTHON || process.env.PYTHON || 'python3';
+    const python = resolvePythonExecutable('VIBEVOICE_PYTHON');
     const child = spawn(python, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -655,12 +1221,23 @@ function synthesizeVibeVoice(options) {
   });
 }
 
+function resolvePythonExecutable(envName) {
+  const explicit = String(process.env[envName] || process.env.PYTHON || '').trim();
+  if (explicit) return explicit;
+  const virtualEnv = String(process.env.VIRTUAL_ENV || '').trim();
+  if (virtualEnv) {
+    const candidate = path.join(virtualEnv, process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'python3';
+}
+
 function synthesizeChatterbox(options) {
   return new Promise((resolve) => {
     const scriptPath = path.join(__dirname, '..', 'scripts', 'chatterbox_tts.py');
     const outputPath = path.join(os.tmpdir(), `jarvis-chatterbox-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
     const cacheRoot = path.join(__dirname, '..', '.cache');
-    const python = process.env.CHATTERBOX_PYTHON || process.env.PYTHON || 'python3';
+    const python = resolvePythonExecutable('CHATTERBOX_PYTHON');
     const child = spawn(python, [scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -742,6 +1319,7 @@ ipcMain.on('window:set-ignore-mouse', (event, ignore) => {
 // 수동 드래그를 위한 IPC 핸들러: 렌더러에서 계산된 좌표로 창 위치 이동
 ipcMain.on('window:move', (event, { x, y, width, height }) => {
   if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(false);
     mainWindow.setBounds({ x, y, width, height });
   }
 });
@@ -751,13 +1329,75 @@ ipcMain.handle('window:get-bounds', async () => {
   return null;
 });
 
+ipcMain.handle('window:place-sphere-input', async () => {
+  if (!mainWindow) return null;
+  mainWindow.setIgnoreMouseEvents(false);
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const workArea = display.workArea;
+  const width = 560;
+  const height = 260;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const x = clamp(
+    cursor.x - 12,
+    workArea.x,
+    workArea.x + workArea.width - width,
+  );
+  const y = clamp(
+    cursor.y - 84,
+    workArea.y,
+    workArea.y + workArea.height - height,
+  );
+  mainWindow.setBounds({ x, y, width, height });
+  return {
+    bounds: { x, y, width, height },
+    cursor,
+    local: {
+      x: cursor.x - x,
+      y: cursor.y - y,
+    },
+  };
+});
+
+ipcMain.handle('window:reset-sphere-position', async () => {
+  if (!mainWindow) return null;
+  mainWindow.setIgnoreMouseEvents(false);
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
+  const workArea = display.workArea;
+  const bounds = {
+    x: workArea.x + workArea.width - SPHERE_WINDOW_W - SPHERE_MARGIN,
+    y: workArea.y + SPHERE_MARGIN,
+    width: SPHERE_WINDOW_W,
+    height: SPHERE_WINDOW_H,
+  };
+  mainWindow.setBounds(bounds);
+  lastSphereBounds = bounds;
+  return bounds;
+});
+
+ipcMain.handle('vision:open-window', async (event, payload = {}) => {
+  return startVisionRuntime(payload);
+});
+
+ipcMain.handle('vision:close-window', async () => {
+  return stopVisionRuntime();
+});
+
+ipcMain.handle('vision:set-enabled', async (event, enabled) => {
+  visionEnabled = enabled === true;
+  if (!visionEnabled) {
+    stopVisionRuntime();
+  }
+  return { ok: true, enabled: visionEnabled };
+});
+
 // ── App lifecycle ──────────────────────────────────────
 app.whenReady().then(() => {
   requestMacOSActionPermissions();
 
-  // Allow microphone access for STT
+  // Allow microphone/camera access for STT and optional Vision preview
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media' || permission === 'microphone') {
+    if (permission === 'media' || permission === 'microphone' || permission === 'camera') {
       callback(true);
     } else {
       callback(false);
@@ -765,7 +1405,7 @@ app.whenReady().then(() => {
   });
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    if (permission === 'media' || permission === 'microphone') {
+    if (permission === 'media' || permission === 'microphone' || permission === 'camera') {
       return true;
     }
     return false;
@@ -807,5 +1447,6 @@ app.on('will-quit', () => {
   }
   activeTtsStreams.clear();
   shutdownGptSovitsServer();
+  shutdownQwen3LocalServer();
   globalShortcut.unregisterAll();
 });

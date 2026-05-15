@@ -6,6 +6,7 @@ import type { Particle } from "./types";
 const DEFAULT_SPHERE_COUNT = 600;
 const MIN_DENSITY = 0.25;
 const MAX_DENSITY = 1;
+const MINI_SPHERE_SIZE = 160;
 
 export class SphereLayer {
     particles: Particle[] = [];
@@ -57,9 +58,10 @@ export class SphereLayer {
 
     updateTargets(now: number, W: number, H: number) {
         const mini = isMiniMode(H);
-        const cx = mini ? W - H * 0.5 : W * 0.85;
+        const miniDiameter = Math.min(MINI_SPHERE_SIZE, H);
+        const cx = mini ? W - miniDiameter * 0.5 : W * 0.85;
         const cy = mini ? H * 0.5 : H * 0.15;
-        const baseR = mini ? H * 0.32 : Math.min(W, H) * 0.055;
+        const baseR = mini ? miniDiameter * 0.32 : Math.min(W, H) * 0.055;
 
         const target = getAudioLevel();
         this.smoothLevel += (target - this.smoothLevel) * 0.15;
@@ -121,9 +123,10 @@ export class SphereLayer {
         const cb = this.glowB | 0;
 
         const mini = isMiniMode(H);
-        const gx = mini ? W - H * 0.5 : W * 0.85;
+        const miniDiameter = Math.min(MINI_SPHERE_SIZE, H);
+        const gx = mini ? W - miniDiameter * 0.5 : W * 0.85;
         const gy = mini ? H * 0.5 : H * 0.15;
-        const gr = mini ? H * 0.45 : Math.min(W, H) * 0.09;
+        const gr = mini ? miniDiameter * 0.45 : Math.min(W, H) * 0.09;
         const a = 0.15 * opacity;
         const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr);
         grad.addColorStop(0, `rgba(${cr},${cg},${cb},${a})`);

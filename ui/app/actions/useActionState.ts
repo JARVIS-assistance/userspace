@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
     ActionState,
     EMPTY_ACTION_STATE,
@@ -8,6 +8,7 @@ import {
 } from "./types";
 
 const FEED_CAP = 8;
+const COMPLETED_DISMISS_MS = 3000;
 
 interface Options {
     sendEvent: (type: string, payload: Record<string, unknown>) => void;
@@ -20,6 +21,52 @@ interface WsMessage {
 
 export function useActionState({ sendEvent }: Options) {
     const [state, setState] = useState<ActionState>(EMPTY_ACTION_STATE);
+    const completedDismissTimersRef = useRef<Map<string, number>>(new Map());
+
+    const clearCompletedDismissTimer = useCallback((actionId: string) => {
+        const timer = completedDismissTimersRef.current.get(actionId);
+        if (timer !== undefined) {
+            window.clearTimeout(timer);
+            completedDismissTimersRef.current.delete(actionId);
+        }
+    }, []);
+
+    useEffect(() => {
+        const completedIds = new Set(
+            state.feed
+                .filter((entry) =>
+                    entry.kind !== "step"
+                    && entry.status === "completed"
+                    && !isTerminalFeedEntry(entry)
+                )
+                .map((entry) => entry.action_id),
+        );
+        for (const actionId of completedIds) {
+            if (completedDismissTimersRef.current.has(actionId)) continue;
+            const timer = window.setTimeout(() => {
+                completedDismissTimersRef.current.delete(actionId);
+                setState((s) => ({
+                    ...s,
+                    feed: s.feed.filter((entry) => entry.action_id !== actionId),
+                }));
+            }, COMPLETED_DISMISS_MS);
+            completedDismissTimersRef.current.set(actionId, timer);
+        }
+        for (const actionId of completedDismissTimersRef.current.keys()) {
+            if (!completedIds.has(actionId)) {
+                clearCompletedDismissTimer(actionId);
+            }
+        }
+    }, [clearCompletedDismissTimer, state.feed]);
+
+    useEffect(() => {
+        return () => {
+            for (const timer of completedDismissTimersRef.current.values()) {
+                window.clearTimeout(timer);
+            }
+            completedDismissTimersRef.current.clear();
+        };
+    }, []);
 
     const onWsMessage = useCallback((msg: WsMessage): boolean => {
         if (msg.type === "client_action.pending") {
@@ -155,6 +202,29 @@ export function useActionState({ sendEvent }: Options) {
             return false;
         }
 
+        if (msg.type === "conversation.cancelled" || msg.type === "conversation.barge_in") {
+            const reason = String(msg.payload?.reason || "barge_in");
+            setState((s) => ({
+                ...s,
+                pendingConfirms: [],
+                feed: s.feed.filter((entry) =>
+                    ![
+                        "queued",
+                        "waiting_confirmation",
+                        "running",
+                        "retrying_compile",
+                    ].includes(entry.status)
+                ),
+            }));
+            for (const actionId of completedDismissTimersRef.current.keys()) {
+                clearCompletedDismissTimer(actionId);
+            }
+            if (reason) {
+                // State-only cleanup; backend submits rejected results for cancelled request actions.
+            }
+            return false;
+        }
+
         if (msg.type === "conversation.done" && msg.payload?.summary === "embedded assistant action suppressed") {
             const id = `suppressed_${Number(msg.payload.timestamp || Date.now())}`;
             setState((s) => ({
@@ -206,11 +276,12 @@ export function useActionState({ sendEvent }: Options) {
     );
 
     const dismissFeedEntry = useCallback((actionId: string) => {
+        clearCompletedDismissTimer(actionId);
         setState((s) => ({
             ...s,
             feed: s.feed.filter((f) => f.action_id !== actionId),
         }));
-    }, []);
+    }, [clearCompletedDismissTimer]);
 
     return { state, onWsMessage, respondConfirm, dismissFeedEntry };
 }
@@ -278,4 +349,8 @@ function upsertTerminalFeed(
 
 function prependCap(feed: FeedEntry[], entry: FeedEntry): FeedEntry[] {
     return [entry, ...feed].slice(0, FEED_CAP);
+}
+
+function isTerminalFeedEntry(entry: FeedEntry): boolean {
+    return entry.type === "terminal" || entry.type === "terminal.run";
 }

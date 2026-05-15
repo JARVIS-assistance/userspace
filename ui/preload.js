@@ -22,7 +22,12 @@ contextBridge.exposeInMainWorld('jarvisBridge', {
   restoreWindow: () => ipcRenderer.send('window:restore'),
   moveWindow: (bounds) => ipcRenderer.send('window:move', bounds),
   getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
+  placeSphereInput: () => ipcRenderer.invoke('window:place-sphere-input'),
+  resetSpherePosition: () => ipcRenderer.invoke('window:reset-sphere-position'),
   minimizeAnimationDone: () => ipcRenderer.send('window:minimize-animation-done'),
+  openVisionWindow: (payload) => ipcRenderer.invoke('vision:open-window', payload),
+  closeVisionWindow: () => ipcRenderer.invoke('vision:close-window'),
+  setVisionEnabled: (enabled) => ipcRenderer.invoke('vision:set-enabled', enabled),
 
   // Window state events (main → renderer)
   onMinimizeToSphere: (callback) => {

@@ -1,5 +1,6 @@
 export const EXTERNAL_ACTION_TYPES = new Set([
     "terminal",
+    "terminal.run",
     "app_control",
     "file_write",
     "file_read",
@@ -75,6 +76,11 @@ function isMacOsPermissionError(error: string): boolean {
 }
 
 const WAITING_MESSAGES = [
+    "음...",
+    "어...",
+    "잠깐만요...",
+    "음, 확인하고 있어요.",
+    "어... 잠시만요.",
     "잠시만요!",
     "바로 확인할게요.",
     "처리하고 있어요.",

@@ -4,6 +4,7 @@ interface Props {
     subtitle: string;
     micActive: boolean;
     onSphereClick: () => void;
+    onSphereDoubleClick?: (event: MouseEvent) => void;
     onMouseDown?: (event: MouseEvent) => void;
 }
 
@@ -11,11 +12,16 @@ export default function SphereOverlay({
     subtitle,
     micActive,
     onSphereClick,
+    onSphereDoubleClick,
     onMouseDown,
 }: Props) {
+    const handleMouseDown = (event: MouseEvent) => {
+        event.stopPropagation();
+        onMouseDown?.(event);
+    };
+
     return (
         <div
-            onMouseDown={onMouseDown}
             style={{
                 position: "absolute",
                 inset: 0,
@@ -23,8 +29,7 @@ export default function SphereOverlay({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "flex-end",
-                pointerEvents: "auto",
-                cursor: "pointer",
+                pointerEvents: "none",
             }}
         >
             {subtitle ? (
@@ -67,14 +72,41 @@ export default function SphereOverlay({
                 </div>
             ) : null}
             <div
+                data-minimized-interactive="true"
+                onMouseDown={handleMouseDown}
+                title="드래그해서 이동"
                 style={{
+                    position: "relative",
                     width: 120,
                     minWidth: 120,
                     height: "100%",
-                    cursor: "pointer",
+                    cursor: "grab",
                     pointerEvents: "auto",
+                    WebkitAppRegion: "drag",
                 }}
-            />
+            >
+                <button
+                    data-minimized-interactive="true"
+                    type="button"
+                    onMouseDown={handleMouseDown}
+                    onClick={onSphereClick}
+                    onDoubleClick={onSphereDoubleClick}
+                    title="더블클릭해서 원래 창으로 복원"
+                    style={{
+                        position: "absolute",
+                        right: 26,
+                        top: "50%",
+                        width: 68,
+                        height: 68,
+                        transform: "translateY(-50%)",
+                        border: 0,
+                        padding: 0,
+                        background: "transparent",
+                        cursor: "grab",
+                        WebkitAppRegion: "no-drag",
+                    }}
+                />
+            </div>
         </div>
     );
 }

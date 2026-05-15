@@ -22,6 +22,8 @@ def build_action_dispatcher(
     actions: ActionSettings,
     *,
     emit: EmitEnvelope,
+    todo_api_base: str = "",
+    auth_token: str = "",
 ) -> ActionDispatcher:
     enabled_set = set(actions.enabled_types)
     dispatcher = ActionDispatcher(
@@ -31,7 +33,12 @@ def build_action_dispatcher(
         enabled_capabilities=set(actions.enabled_capabilities),
         force_confirm_capabilities=set(actions.force_confirm_capabilities),
     )
-    register_default_handlers(dispatcher, actions)
+    register_default_handlers(
+        dispatcher,
+        actions,
+        todo_api_base=todo_api_base,
+        auth_token=auth_token,
+    )
     return dispatcher
 
 
@@ -47,6 +54,9 @@ async def sync_runtime_profile(action_api: Any, actions: ActionSettings) -> None
 def apply_dispatcher_policy(
     dispatcher: ActionDispatcher,
     actions: ActionSettings,
+    *,
+    todo_api_base: str = "",
+    auth_token: str = "",
 ) -> None:
     enabled_set = set(actions.enabled_types)
     dispatcher.set_policy(
@@ -56,7 +66,12 @@ def apply_dispatcher_policy(
         force_confirm_capabilities=set(actions.force_confirm_capabilities),
     )
     dispatcher.clear_handlers()
-    register_default_handlers(dispatcher, actions)
+    register_default_handlers(
+        dispatcher,
+        actions,
+        todo_api_base=todo_api_base,
+        auth_token=auth_token,
+    )
     print(
         f"[CFG] actions updated  enabled={sorted(enabled_set)}  "
         f"force_confirm={sorted(actions.force_confirm_types)}",
@@ -72,13 +87,20 @@ async def apply_actions_config_patch(
     action_api: Any,
     dispatcher: ActionDispatcher,
     reload_settings: Callable[[], ActionSettings],
+    todo_api_base: str = "",
+    auth_token: str = "",
 ) -> dict[str, object]:
     new_actions = persist_actions_patch(config_path, payload)
     actions = reload_settings()
     runtime_headers.clear()
     runtime_headers.update(build_runtime_headers(actions))
     await sync_runtime_profile(action_api, actions)
-    apply_dispatcher_policy(dispatcher, actions)
+    apply_dispatcher_policy(
+        dispatcher,
+        actions,
+        todo_api_base=todo_api_base,
+        auth_token=auth_token,
+    )
     return actions_to_dict(new_actions)
 
 
@@ -103,6 +125,9 @@ async def forward_conversation_events(
             continue
 
         await emit_conversation(event)
+        if poller.is_request_cancelled(pending.request_id):
+            await poller.dispatch_pending_now(pending)
+            continue
         poller.dispatch_pending(pending)
 
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app.actions.dispatcher import ActionDispatcher
+from app.actions.handlers.base import HandlerError
 from app.actions.handlers.browser import build_search_url, make_browser
 from app.actions.handlers.terminal import make_terminal
 from app.actions.handlers.open_url import make_open_url
@@ -238,9 +240,11 @@ class BrowserActionTests(unittest.TestCase):
 
     def test_terminal_run_uses_structured_command_not_execute_literal(self) -> None:
         async def run() -> None:
+            tmp_cwd = str(Path("/tmp").resolve())
             handler = make_terminal(
                 True,
                 allowed_commands=("echo",),
+                cwd_allowlist=("/tmp",),
             )
             with patch(
                 "app.actions.handlers.terminal.asyncio.create_subprocess_exec",
@@ -254,14 +258,49 @@ class BrowserActionTests(unittest.TestCase):
                         type="terminal.run",
                         command="execute",
                         payload="echo hello",
-                        args={"command": "echo hello"},
+                        args={"command": "echo hello", "cwd": "/tmp"},
                         description="Run echo",
                         requires_confirm=True,
                     )
                 )
             mock_exec.assert_called_once()
             self.assertEqual(mock_exec.call_args.args[:2], ("echo", "hello"))
+            self.assertEqual(mock_exec.call_args.kwargs["cwd"], tmp_cwd)
             self.assertEqual(result["stdout"], "hello\n")
+            self.assertEqual(result["command"], "echo hello")
+            self.assertEqual(result["cwd"], tmp_cwd)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["source"], "terminal")
+
+        import asyncio
+
+        asyncio.run(run())
+
+    def test_terminal_run_blocks_disallowed_command_with_context(self) -> None:
+        async def run() -> None:
+            tmp_cwd = str(Path("/tmp").resolve())
+            handler = make_terminal(
+                True,
+                allowed_commands=("echo", "pwd", "ls", "git status"),
+                cwd_allowlist=("/tmp",),
+            )
+            with self.assertRaisesRegex(HandlerError, "Command is not allowed") as ctx:
+                await handler(
+                    ClientAction(
+                        type="terminal",
+                        command="execute",
+                        target="zsh",
+                        payload="npm install",
+                        args={"command": "npm install", "cwd": "/tmp", "timeout": 20},
+                        description="Run terminal command: npm install",
+                        requires_confirm=True,
+                    )
+                )
+
+            self.assertEqual(ctx.exception.output["command"], "npm install")
+            self.assertEqual(ctx.exception.output["cwd"], tmp_cwd)
+            self.assertEqual(ctx.exception.output["shell"], "zsh")
+            self.assertEqual(ctx.exception.output["source"], "terminal")
 
         import asyncio
 

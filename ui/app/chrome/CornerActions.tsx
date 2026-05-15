@@ -1,11 +1,11 @@
 interface Props {
     onLogout: () => void;
     onOpenSettings: () => void;
+    onOpenTodos: () => void;
 }
 
 const baseBtn: React.CSSProperties = {
     position: "absolute",
-    top: 52,
     zIndex: 70,
     background: "rgba(20,20,20,0.72)",
     border: "1px solid rgba(120,80,30,0.34)",
@@ -20,12 +20,12 @@ const baseBtn: React.CSSProperties = {
     transition: "border-color 0.2s ease, color 0.2s ease, background 0.2s ease",
 };
 
-export default function CornerActions({ onLogout, onOpenSettings }: Props) {
+export default function CornerActions({ onLogout, onOpenSettings, onOpenTodos }: Props) {
     return (
         <>
             <button
                 onClick={onLogout}
-                style={{ ...baseBtn, right: 116 }}
+                style={{ ...baseBtn, right: 116, bottom: 18 }}
                 onMouseEnter={(e) =>
                     Object.assign(e.currentTarget.style, {
                         borderColor: "rgba(220,80,60,0.48)",
@@ -45,8 +45,29 @@ export default function CornerActions({ onLogout, onOpenSettings }: Props) {
                 LOGOUT
             </button>
             <button
+                onClick={onOpenTodos}
+                style={{ ...baseBtn, right: 18, top: 52 }}
+                onMouseEnter={(e) =>
+                    Object.assign(e.currentTarget.style, {
+                        borderColor: "rgba(194,149,107,0.62)",
+                        color: "rgba(235,205,170,0.96)",
+                        background: "rgba(38,28,18,0.78)",
+                    })
+                }
+                onMouseLeave={(e) =>
+                    Object.assign(e.currentTarget.style, {
+                        borderColor: "rgba(120,80,30,0.34)",
+                        color: "rgba(210,180,140,0.82)",
+                        background: "rgba(20,20,20,0.72)",
+                    })
+                }
+                title="Todos"
+            >
+                TODO
+            </button>
+            <button
                 onClick={onOpenSettings}
-                style={{ ...baseBtn, right: 18 }}
+                style={{ ...baseBtn, right: 18, bottom: 18 }}
                 onMouseEnter={(e) =>
                     Object.assign(e.currentTarget.style, {
                         borderColor: "rgba(194,149,107,0.62)",

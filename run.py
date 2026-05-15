@@ -79,6 +79,7 @@ def start_electron(userspace_root: str) -> subprocess.Popen | None:
         "AUTH_API_BASE": settings.auth_api_base,
         "JARVIS_USERSPACE_AUTH_DISABLED": os.getenv("JARVIS_USERSPACE_AUTH_DISABLED", "0"),
     }
+    env.setdefault("PYTHON", sys.executable)
     return _spawn_child(["npm", "run", "start"], cwd=ui_dir, env=env, process_label="electron")
 
 
@@ -147,7 +148,7 @@ def main() -> None:
 
     # 1) Start Electron UI
     electron_proc = start_electron(userspace_root)
-    # 2) Start Vision runtime (opt-out via JARVIS_VISION_ENABLE=0)
+    # 2) Start Vision Electron runtime with the userspace app by default.
     vision_proc = start_vision(userspace_root)
 
     # 3) Start Python backend (blocking)

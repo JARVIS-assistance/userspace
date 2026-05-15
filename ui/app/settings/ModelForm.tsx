@@ -117,16 +117,25 @@ export default function ModelForm({
                     onChange={(v) => set("is_default", v)}
                     label="DEFAULT"
                 />
-                <Toggle
-                    value={model.supports_stream}
-                    onChange={(v) => set("supports_stream", v)}
-                    label="STREAM"
-                />
-                <Toggle
-                    value={model.supports_realtime}
-                    onChange={(v) => set("supports_realtime", v)}
-                    label="REALTIME"
-                />
+                <div
+                    style={{
+                        marginTop: 10,
+                        paddingTop: 10,
+                        borderTop: "1px solid rgba(120,80,40,0.12)",
+                    }}
+                >
+                    <label style={css.label}>FEATURES</label>
+                    <Toggle
+                        value={model.supports_stream}
+                        onChange={(v) => set("supports_stream", v)}
+                        label="STREAM"
+                    />
+                    <Toggle
+                        value={model.supports_realtime}
+                        onChange={(v) => set("supports_realtime", v)}
+                        label="REALTIME"
+                    />
+                </div>
             </div>
             <div
                 style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}

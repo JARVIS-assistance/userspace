@@ -30,6 +30,7 @@ ALL_ACTION_TYPES: tuple[str, ...] = (
     "mouse_drag",
     "keyboard_type",
     "hotkey",
+    "todo",
 )
 
 ALL_CAPABILITIES: tuple[str, ...] = (
@@ -53,6 +54,9 @@ ALL_CAPABILITIES: tuple[str, ...] = (
     "file.write",
     "clipboard.copy",
     "clipboard.paste",
+    "todo.create",
+    "todo.update",
+    "todo.delete",
 )
 
 # enabled_types 토글이 핸들러 enabled 플래그도 함께 끄고 켜는 매핑

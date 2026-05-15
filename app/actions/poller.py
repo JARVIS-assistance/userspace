@@ -52,6 +52,7 @@ class ActionPoller:
         self._seen_cap = seen_cap
         self._inflight: set[asyncio.Task[None]] = set()
         self._failed_requests: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self._cancelled_requests: dict[str, str] = {}
 
     # ── 라이프사이클 ───────────────────────────────────
 
@@ -99,6 +100,18 @@ class ActionPoller:
         self._mark_seen(pending.action_id)
         self._spawn_dispatch(pending)
         return True
+
+    def cancel_request(self, request_id: str, reason: str = "barge_in") -> None:
+        if not request_id:
+            return
+        self._cancelled_requests[request_id] = reason
+        self._mark_request_failed(request_id, f"cancelled: {reason}")
+
+    def is_request_cancelled(self, request_id: str) -> bool:
+        return bool(request_id and request_id in self._cancelled_requests)
+
+    def cancellation_reason(self, request_id: str) -> str:
+        return self._cancelled_requests.get(request_id, "barge_in")
 
     async def dispatch_pending_now(self, pending: PendingClientAction) -> bool:
         """Dispatch an SSE action and submit its result before reading more SSE."""
@@ -180,7 +193,12 @@ class ActionPoller:
             flush=True,
         )
         previous_error = self._failed_requests.get(pending.request_id)
-        if previous_error:
+        cancelled_reason = self._cancelled_requests.get(pending.request_id)
+        if cancelled_reason:
+            status = "rejected"
+            output = {"cancelled": True, "reason": cancelled_reason}
+            error = f"cancelled: {cancelled_reason}"
+        elif previous_error:
             status = "rejected"
             output = {"blocked_by_request_failure": True}
             error = f"previous action in request failed: {previous_error}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,8 +63,11 @@ class ClientContextTests(unittest.TestCase):
         )
         self.assertIn("terminal/execute", headers["X-Client-Capabilities"])
         self.assertEqual(headers["X-Client-Terminal-Enabled"], "true")
+        self.assertTrue(headers["X-Client-Terminal-Shell-Path"])
+        self.assertEqual(headers["X-Client-Terminal-Cwd"], "/tmp/work")
         self.assertEqual(headers["X-Client-Terminal-Allowed-Commands"], "pwd,git")
         self.assertEqual(headers["X-Client-Terminal-Cwd-Allowlist"], "/tmp/work")
+        self.assertEqual(headers["X-Client-Terminal-Timeout-Seconds"], "20")
 
     def test_list_available_applications_from_override(self) -> None:
         with patch.dict(
@@ -99,6 +103,43 @@ class ClientContextTests(unittest.TestCase):
                     ["Google Chrome", "Sublime Text"],
                 )
 
+    def test_weather_profile_includes_plist_and_capability_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            contents = root / "Weather.app" / "Contents"
+            contents.mkdir(parents=True)
+            with (contents / "Info.plist").open("wb") as fh:
+                plistlib.dump(
+                    {
+                        "CFBundleIdentifier": "com.apple.weather",
+                        "CFBundleExecutable": "Weather",
+                        "CFBundleDisplayName": "Weather",
+                    },
+                    fh,
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "USERSPACE_APPLICATIONS": "",
+                    "USERSPACE_APPLICATION_DIRS": tmp,
+                },
+            ):
+                profiles = list_available_application_profiles()
+
+        weather = profiles[0]
+        self.assertEqual(weather["name"], "Weather")
+        self.assertEqual(weather["display_name"], "Weather")
+        self.assertEqual(weather["bundle_id"], "com.apple.weather")
+        self.assertEqual(weather["executable"], "Weather")
+        self.assertIn("weather", weather["categories"])
+        self.assertIn("weather", weather["capabilities"])
+        self.assertIn("forecast", weather["capabilities"])
+        self.assertIn("날씨", weather["capabilities"])
+        self.assertIn("예보", weather["capabilities"])
+        self.assertIn("오늘 날씨", weather["keywords"])
+        self.assertIn("날씨", weather["aliases"])
+
     def test_build_runtime_profile_includes_applications(self) -> None:
         with patch.dict(os.environ, {"USERSPACE_APPLICATIONS": "Google Chrome"}):
             profile = build_runtime_profile(ActionSettings())
@@ -109,6 +150,33 @@ class ClientContextTests(unittest.TestCase):
         self.assertIn("browser.search", profile["enabled_capabilities"])
         self.assertIn("terminal.run", profile["supported_capabilities"])
         self.assertNotIn("terminal.run", profile["capabilities"])
+
+    def test_build_runtime_profile_includes_terminal_policy(self) -> None:
+        profile = build_runtime_profile(
+            ActionSettings(
+                enabled_types=("terminal",),
+                enabled_capabilities=("terminal.run",),
+                terminal=TerminalSettings(
+                    enabled=True,
+                    allowed_commands=("echo", "pwd", "ls", "git status"),
+                    cwd_allowlist=("/tmp/work",),
+                ),
+            )
+        )
+
+        self.assertIn("terminal.run", profile["capabilities"])
+        self.assertEqual(profile["terminal"]["enabled"], True)
+        self.assertTrue(profile["terminal"]["shell"])
+        self.assertTrue(profile["terminal"]["shell_path"])
+        self.assertEqual(profile["terminal"]["cwd"], "/tmp/work")
+        self.assertEqual(
+            profile["terminal"]["allowed_commands"],
+            ["echo", "pwd", "ls", "git status"],
+        )
+        self.assertEqual(profile["terminal"]["allowed_cwds"], ["/tmp/work"])
+        self.assertEqual(profile["terminal"]["supports_pty"], False)
+        self.assertEqual(profile["terminal"]["requires_confirm"], True)
+        self.assertEqual(profile["terminal"]["timeout_seconds"], 20)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,17 @@
 import ModelForm from "./ModelForm";
 import { css } from "./styles";
-import { EMPTY_MODEL, type ModelConfig } from "./types";
+import { EMPTY_MODEL, type ModelConfig, type ModelSelection } from "./types";
 
 interface Props {
     models: ModelConfig[];
     editing: ModelConfig | null;
     loading: boolean;
     error: string | null;
+    selection: ModelSelection;
     onEdit: (m: ModelConfig | null) => void;
     onSave: (m: ModelConfig) => void;
     onDelete: (m: ModelConfig) => void;
+    onSaveSelection: (patch: Partial<ModelSelection>) => void;
 }
 
 export default function ModelTab({
@@ -17,12 +19,78 @@ export default function ModelTab({
     editing,
     loading,
     error,
+    selection,
     onEdit,
     onSave,
     onDelete,
+    onSaveSelection,
 }: Props) {
+    const realtimeModels = models.filter(
+        (m) => m.id && m.is_active && m.supports_realtime,
+    );
+    const deepModels = models
+        .filter((m) => m.id && m.is_active)
+        .sort((a, b) => Number(b.supports_stream) - Number(a.supports_stream));
+
+    const renderModelOption = (m: ModelConfig) => (
+        <option key={m.id} value={m.id}>
+            {m.model_name} ({m.provider_name})
+        </option>
+    );
+
     return (
         <div>
+            {!editing && (
+                <div style={{ ...css.card, marginBottom: 16 }}>
+                    <label style={css.label}>MODEL SELECTION</label>
+                    <div style={css.row}>
+                        <div style={css.half}>
+                            <label style={css.label}>REALTIME</label>
+                            <select
+                                style={css.select}
+                                value={selection.realtime_model_config_id || ""}
+                                onChange={(e) =>
+                                    onSaveSelection({
+                                        realtime_model_config_id:
+                                            e.target.value || null,
+                                    })
+                                }
+                                disabled={loading}
+                            >
+                                <option value="">선택 안 함</option>
+                                {realtimeModels.map(renderModelOption)}
+                            </select>
+                        </div>
+                        <div style={css.half}>
+                            <label style={css.label}>DEEP</label>
+                            <select
+                                style={css.select}
+                                value={selection.deep_model_config_id || ""}
+                                onChange={(e) =>
+                                    onSaveSelection({
+                                        deep_model_config_id:
+                                            e.target.value || null,
+                                    })
+                                }
+                                disabled={loading}
+                            >
+                                <option value="">선택 안 함</option>
+                                {deepModels.map(renderModelOption)}
+                            </select>
+                        </div>
+                    </div>
+                    <p
+                        style={{
+                            fontSize: 11,
+                            color: "rgba(120,80,40,0.5)",
+                            margin: 0,
+                            lineHeight: 1.5,
+                        }}
+                    >
+                        REALTIME은 활성화된 realtime 지원 모델만, DEEP은 활성화된 모델을 표시합니다.
+                    </p>
+                </div>
+            )}
             {models.length === 0 && !editing && (
                 <p
                     style={{
@@ -87,6 +155,11 @@ export default function ModelTab({
                             {m.supports_stream && (
                                 <span style={css.badge("rgba(100,180,220)")}>
                                     STREAM
+                                </span>
+                            )}
+                            {m.supports_realtime && (
+                                <span style={css.badge("rgba(80,170,140)")}>
+                                    REALTIME
                                 </span>
                             )}
                         </div>

@@ -6,6 +6,7 @@
 - thinking        → conversation.thinking
 - plan_step       → conversation.plan_step
 - assistant_delta → conversation.delta
+- assistant_truncated → conversation.truncated
 - assistant_done  → conversation.done (payload: text + has_actions / action_count / action_results)
 - error           → conversation.error
 - action_dispatch → conversation.action_dispatch    (action 발행 알림)
@@ -87,14 +88,39 @@ async def parse_conversation_stream(
             if content:
                 yield EventEnvelope(
                     type="conversation.delta",
-                    payload={"text": content},
+                    payload={
+                        "text": content,
+                        "request_id": data.get("request_id", ""),
+                    },
                 )
+            continue
+
+        if current_event == "assistant_truncated":
+            yield EventEnvelope(
+                type="conversation.truncated",
+                payload={
+                    "request_id": data.get("request_id", ""),
+                    "done_reason": data.get("done_reason", ""),
+                    "content": data.get(
+                        "content",
+                        "realtime response hit provider length limit",
+                    ),
+                },
+            )
             continue
 
         if current_event == "assistant_done":
             # data: {content, summary?, has_actions?, action_count?, action_results?}
             payload: dict = {"text": data.get("content", "")}
-            for key in ("summary", "has_actions", "action_count", "action_results"):
+            for key in (
+                "summary",
+                "has_actions",
+                "action_count",
+                "action_results",
+                "request_id",
+                "done_reason",
+                "truncated",
+            ):
                 if key in data:
                     payload[key] = data[key]
             yield EventEnvelope(type="conversation.done", payload=payload)

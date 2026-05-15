@@ -21,6 +21,8 @@ export default function CameraTab({ config, onChange }: Props) {
     const [devices, setDevices] = useState<CameraDevice[]>([]);
     const [loading, setLoading] = useState(false);
     const [previewing, setPreviewing] = useState(false);
+    const [visionRunning, setVisionRunning] = useState(false);
+    const [visionStatus, setVisionStatus] = useState("");
     const [error, setError] = useState<string | null>(null);
     const previewConfigKey = [
         config.deviceId,
@@ -37,6 +39,12 @@ export default function CameraTab({ config, onChange }: Props) {
     }, []);
 
     const refreshDevices = useCallback(async () => {
+        if (!config.enabled) {
+            setDevices([]);
+            setError(null);
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         setError(null);
         try {
@@ -47,9 +55,10 @@ export default function CameraTab({ config, onChange }: Props) {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [config.enabled]);
 
     const requestAccessAndRefresh = useCallback(async () => {
+        if (!config.enabled) return;
         setLoading(true);
         setError(null);
         try {
@@ -65,9 +74,10 @@ export default function CameraTab({ config, onChange }: Props) {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [config.enabled]);
 
     const startPreview = useCallback(async () => {
+        if (!config.enabled) return;
         setLoading(true);
         setError(null);
         stopPreview();
@@ -103,26 +113,73 @@ export default function CameraTab({ config, onChange }: Props) {
         }
     }, [config, devices, previewConfigKey, stopPreview]);
 
-    useEffect(() => {
-        void refreshDevices();
-        return stopPreview;
-    }, [refreshDevices, stopPreview]);
+    const openVisionWindow = useCallback(() => {
+        if (!config.enabled) return;
+        setError(null);
+        setVisionStatus("Starting Python vision...");
+        void (window as any).jarvisBridge?.openVisionWindow?.(config).then((result: any) => {
+            if (result?.ok === false) {
+                setError(String(result.error || "Vision start failed"));
+                setVisionRunning(false);
+                setVisionStatus("");
+                return;
+            }
+            setVisionRunning(true);
+            const pid = result?.pid ? `pid ${result.pid}` : "running";
+            setVisionStatus(`Python vision started (${pid}). First run may download models before the camera window appears.`);
+        });
+    }, [config]);
+
+    const stopVision = useCallback(() => {
+        void (window as any).jarvisBridge?.closeVisionWindow?.();
+        setVisionRunning(false);
+        setVisionStatus("");
+    }, []);
 
     useEffect(() => {
+        if (!config.enabled) {
+            stopPreview();
+            stopVision();
+            setDevices([]);
+            setError(null);
+            setLoading(false);
+            return;
+        }
+        void refreshDevices();
+        return stopPreview;
+    }, [config.enabled, refreshDevices, stopPreview]);
+
+    useEffect(() => {
+        if (!config.enabled) {
+            stopPreview();
+            return;
+        }
         if (!previewing || loading) return;
         if (activePreviewConfigKeyRef.current === previewConfigKey) return;
         void startPreview();
-    }, [loading, previewConfigKey, previewing, startPreview]);
+    }, [config.enabled, loading, previewConfigKey, previewing, startPreview, stopPreview]);
 
     const selected = chooseCameraDevice(devices, config);
 
     return (
         <div>
             <div style={{ marginBottom: 18 }}>
+                <label style={css.label}>VISION</label>
+                <button
+                    type="button"
+                    style={css.btn(config.enabled ? "primary" : "ghost")}
+                    onClick={() => onChange({ enabled: !config.enabled })}
+                >
+                    {config.enabled ? "ENABLED" : "DISABLED"}
+                </button>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
                 <label style={css.label}>CAMERA</label>
                 <select
                     style={css.select}
                     value={config.deviceId}
+                    disabled={!config.enabled}
                     onChange={(event) => {
                         const deviceId = event.target.value;
                         const device = devices.find((d) => d.deviceId === deviceId);
@@ -149,6 +206,7 @@ export default function CameraTab({ config, onChange }: Props) {
                 <input
                     type="checkbox"
                     checked={config.preferPhysical}
+                    disabled={!config.enabled}
                     onChange={(event) =>
                         onChange({ preferPhysical: event.target.checked })
                     }
@@ -160,7 +218,7 @@ export default function CameraTab({ config, onChange }: Props) {
                 <button
                     type="button"
                     style={css.btn("ghost")}
-                    disabled={loading}
+                    disabled={!config.enabled || loading}
                     onClick={requestAccessAndRefresh}
                 >
                     REFRESH
@@ -168,10 +226,18 @@ export default function CameraTab({ config, onChange }: Props) {
                 <button
                     type="button"
                     style={css.btn(previewing ? "danger" : "primary")}
-                    disabled={loading}
+                    disabled={!config.enabled || loading}
                     onClick={previewing ? stopPreview : startPreview}
                 >
                     {previewing ? "STOP PREVIEW" : "TEST PREVIEW"}
+                </button>
+                <button
+                    type="button"
+                    style={css.btn(visionRunning ? "danger" : "primary")}
+                    disabled={!config.enabled}
+                    onClick={visionRunning ? stopVision : openVisionWindow}
+                >
+                    {visionRunning ? "STOP VISION" : "START VISION"}
                 </button>
             </div>
 
@@ -191,6 +257,7 @@ export default function CameraTab({ config, onChange }: Props) {
             />
 
             {error && <div style={errorStyle}>{error}</div>}
+            {visionStatus && <div style={hintStyle}>{visionStatus}</div>}
             {!devices.length && !error && (
                 <div style={hintStyle}>
                     Camera names may appear after macOS grants camera access.
