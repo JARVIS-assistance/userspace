@@ -31,6 +31,12 @@ CAPABILITIES_BY_ACTION_TYPE: dict[str, tuple[str, ...]] = {
         "browser.click",
         "browser.type",
         "browser.select_result",
+        "browser.scroll",
+        "browser.search",
+        "browser.new_tab",
+        "browser.new_window",
+        "browser.close_tab",
+        "browser.focus_address_bar",
     ),
     "app_control": ("app.open", "app.focus", "app.close"),
     "keyboard_type": ("keyboard.type",),
@@ -41,6 +47,7 @@ CAPABILITIES_BY_ACTION_TYPE: dict[str, tuple[str, ...]] = {
     "mouse_move": ("mouse.move", "mouse.position"),
     "mouse_scroll": ("mouse.scroll",),
     "screenshot": ("screen.screenshot", "screen.size", "screen.pixel"),
+    "screen_stream": ("screen.stream_start", "screen.stream_stop"),
     "terminal": ("terminal.run",),
     "file_write": ("file.write",),
     "file_read": ("file.read", "file.list", "file.search"),
@@ -222,6 +229,7 @@ class ActionSettings:
     web_search: ToggleSettings = ToggleSettings()
     calendar_control: ToggleSettings = ToggleSettings()
     screenshot: ScreenshotSettings = ScreenshotSettings()
+    screen_stream: ToggleSettings = ToggleSettings()
 
     @classmethod
     def from_mapping(cls, source: dict[str, Any]) -> "ActionSettings":
@@ -295,6 +303,7 @@ class ActionSettings:
                 enabled=bool(screenshot.get("enabled", False)),
                 allowed_paths=_string_tuple(screenshot.get("allowed_paths"), ()),
             ),
+            screen_stream=_toggle("screen_stream"),
         )
 
 

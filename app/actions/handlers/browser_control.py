@@ -7,8 +7,9 @@ import json
 import sys
 from typing import Any
 
-from app.actions.handlers._browsers import DEFAULT_BROWSER, open_in_browser
+from app.actions.handlers._browsers import _MACOS_APPS, DEFAULT_BROWSER, open_in_browser
 from app.actions.handlers.base import HandlerError
+from app.actions.handlers.browser import build_search_url
 from app.actions.models import ClientAction
 
 
@@ -45,6 +46,18 @@ def make_browser_control(enabled: bool, default_browser: str = DEFAULT_BROWSER):
         if command == "type_element":
             return await _type_element(action)
 
+        if command == "scroll":
+            return await _scroll(action)
+
+        if command == "search":
+            return await _browser_control_search(action, default_browser=default_browser)
+
+        if command == "new_tab":
+            return await _new_tab(action, default_browser=default_browser)
+
+        if command == "new_window":
+            return await _new_window(action, default_browser=default_browser)
+
         if sys.platform != "darwin":
             raise HandlerError(f"browser_control {command!r} not supported on {sys.platform}")
 
@@ -54,23 +67,145 @@ def make_browser_control(enabled: bool, default_browser: str = DEFAULT_BROWSER):
             script = 'tell application "System Events" to key code 124 using {command down}'
         elif command == "reload":
             script = 'tell application "System Events" to keystroke "r" using {command down}'
+        elif command == "close_tab":
+            script = 'tell application "System Events" to keystroke "w" using {command down}'
+        elif command == "focus_address_bar":
+            script = 'tell application "System Events" to keystroke "l" using {command down}'
         else:
             raise HandlerError(f"unsupported browser_control command: {command!r}")
-        proc = await asyncio.create_subprocess_exec(
-            "osascript",
-            "-e",
-            script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate()
-        if proc.returncode != 0:
-            raise HandlerError(
-                f"browser_control failed rc={proc.returncode}: {err.decode(errors='replace')[:300]}"
-            )
+        await _run_system_events_script(script)
         return {"command": command}
 
     return browser_control
+
+
+async def _run_system_events_script(script: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "osascript",
+        "-e",
+        script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise HandlerError(
+            f"browser_control failed rc={proc.returncode}: {err.decode(errors='replace')[:300]}"
+        )
+
+
+async def _scroll(action: ClientAction) -> dict[str, Any]:
+    args = action.args or {}
+    direction = str(args.get("direction") or "down").strip().lower()
+    if direction not in {"up", "down", "left", "right"}:
+        raise HandlerError(f"unsupported scroll direction: {direction!r}")
+    try:
+        amount = int(args.get("amount", 600))
+    except (TypeError, ValueError) as e:
+        raise HandlerError(
+            "invalid scroll amount",
+            output={"command": "scroll", "amount": args.get("amount")},
+        ) from e
+    dx, dy = {
+        "down": (0, amount),
+        "up": (0, -amount),
+        "right": (amount, 0),
+        "left": (-amount, 0),
+    }[direction]
+    js = f"window.scrollBy({dx}, {dy}); JSON.stringify({{ ok: true }});"
+    result = await _run_browser_javascript_action(
+        command="scroll",
+        javascript=js,
+        output_base={"command": "scroll", "direction": direction, "amount": amount},
+    )
+    result["command"] = "scroll"
+    result["direction"] = direction
+    result["amount"] = amount
+    return result
+
+
+async def _browser_control_search(
+    action: ClientAction, *, default_browser: str
+) -> dict[str, Any]:
+    args = action.args or {}
+    query = str(args.get("query") or action.payload or "").strip()
+    if not query:
+        raise HandlerError("browser_control search requires args.query")
+    engine = str(args.get("engine") or args.get("search_engine") or "google")
+    url = build_search_url(query=query, engine=engine)
+    output_base = {"command": "search", "query": query, "generated_url": url}
+
+    if bool(args.get("new_tab", False)):
+        browser = ""
+        raw_browser = args.get("browser")
+        if isinstance(raw_browser, str):
+            browser = raw_browser
+        try:
+            used = await open_in_browser(url, browser=browser or default_browser)
+        except RuntimeError as e:
+            raise HandlerError(str(e), output=output_base) from e
+        return {**output_base, "opened": url, "browser": used}
+
+    js = f"window.location.href = {json.dumps(url)}; JSON.stringify({{ ok: true }});"
+    result = await _run_browser_javascript_action(
+        command="search", javascript=js, output_base=output_base
+    )
+    return {**output_base, **result, "opened": url}
+
+
+async def _new_tab(action: ClientAction, *, default_browser: str) -> dict[str, Any]:
+    url = _optional_url_arg(action)
+    if url:
+        browser = ""
+        raw_browser = (action.args or {}).get("browser")
+        if isinstance(raw_browser, str):
+            browser = raw_browser
+        try:
+            used = await open_in_browser(url, browser=browser or default_browser)
+        except RuntimeError as e:
+            raise HandlerError(str(e)) from e
+        return {"command": "new_tab", "opened": url, "browser": used}
+
+    if sys.platform != "darwin":
+        raise HandlerError(f"browser_control new_tab not supported on {sys.platform}")
+    await _run_system_events_script(
+        'tell application "System Events" to keystroke "t" using {command down}'
+    )
+    return {"command": "new_tab"}
+
+
+async def _new_window(action: ClientAction, *, default_browser: str) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HandlerError(f"browser_control new_window not supported on {sys.platform}")
+
+    browser = ""
+    raw_browser = (action.args or {}).get("browser")
+    if isinstance(raw_browser, str):
+        browser = raw_browser
+    app = _MACOS_APPS.get((browser or default_browser).strip().lower(), "Google Chrome")
+    make_command = "make new document" if app == "Safari" else "make new window"
+    await _run_system_events_script(f'tell application "{app}" to {make_command}')
+
+    result: dict[str, Any] = {"command": "new_window", "browser": app}
+    url = _optional_url_arg(action)
+    if url:
+        js = f"window.location.href = {json.dumps(url)}; JSON.stringify({{ ok: true }});"
+        try:
+            await _execute_browser_javascript(app, js)
+        except RuntimeError as e:
+            raise HandlerError(str(e), output=result) from e
+        result["opened"] = url
+    return result
+
+
+def _optional_url_arg(action: ClientAction) -> str:
+    args = action.args or {}
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return ""
+    if not url.startswith(("http://", "https://")):
+        raise HandlerError(f"browser_control url must be http(s): {url[:80]!r}")
+    return url
 
 
 def _normalize_command(action: ClientAction) -> str:

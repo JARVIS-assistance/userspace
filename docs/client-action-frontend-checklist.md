@@ -51,12 +51,24 @@ actions.
 - [x] `keyboard_type`
 - [x] `hotkey`
 - [x] `terminal/execute`
-- [ ] `browser_control/new_tab`
-- [ ] `browser_control/new_window`
+- [x] `browser_control/new_tab`
+- [x] `browser_control/new_window`
 - [x] `browser_control/search` via `browser/search`
-- [ ] `browser_control/focus_address_bar`
-- [ ] stable `mouse_click`
-- [ ] stable `mouse_drag`
+- [x] `browser_control/search` (direct, current tab or new tab via `args.new_tab`)
+- [x] `browser_control/scroll`
+- [x] `browser_control/close_tab`
+- [x] `browser_control/focus_address_bar`
+- [x] `mouse_click` (pyautogui-based, left/right/middle button)
+- [x] `mouse_drag` (pyautogui-based)
+- [x] `mouse_move`
+- [x] `mouse_scroll`
+- [x] `hotkey` hold duration (`args.duration_seconds`, for held movement keys)
+- [x] `screen_stream/start`, `screen_stream/stop` — periodic frame capture
+      pushed to backend `POST /client/vision/frame`; backend serves the
+      latest frame via `GET /client/vision/frame`. Disabled by policy by
+      default. **Not yet wired into any AI reasoning loop** — no
+      vision-capable model call reads this frame yet; that's a separate,
+      not-yet-scoped follow-up.
 - [ ] screenshot output persistence policy
 
 ## Safety And Sequencing

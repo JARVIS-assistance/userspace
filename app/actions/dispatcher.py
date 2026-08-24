@@ -326,6 +326,12 @@ class ActionDispatcher:
                 "open": "browser.open",
                 "open_url": "browser.navigate",
                 "navigate": "browser.navigate",
+                "scroll": "browser.scroll",
+                "search": "browser.search",
+                "new_tab": "browser.new_tab",
+                "new_window": "browser.new_window",
+                "close_tab": "browser.close_tab",
+                "focus_address_bar": "browser.focus_address_bar",
             }.get(command)
         if action_type == "open_url":
             args = getattr(action, "args", None)
@@ -378,6 +384,8 @@ class ActionDispatcher:
             }.get(command, "system.info")
         if action_type == "screenshot":
             return "screen.screenshot"
+        if action_type == "screen_stream":
+            return "screen.stream_start" if command != "stop" else "screen.stream_stop"
         if action_type == "todo":
             todo_commands = {
                 "create": "todo.create",

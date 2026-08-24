@@ -21,6 +21,7 @@ from app.actions.handlers.physical_input import (
     make_mouse_position,
     make_mouse_scroll,
 )
+from app.actions.handlers.screen_stream import make_screen_stream
 from app.actions.handlers.screenshot import make_screen_inspect, make_screenshot
 from app.actions.handlers.system_info import active_application, application_list, process_list, system_info
 from app.actions.handlers.terminal import make_terminal
@@ -134,6 +135,14 @@ def register_default_handlers(
     screen_inspect_handler = make_screen_inspect(settings.screenshot.enabled)
     dispatcher.register("screen.size", screen_inspect_handler)
     dispatcher.register("screen.pixel", screen_inspect_handler)
+    screen_stream_handler = make_screen_stream(
+        settings.screen_stream.enabled,
+        api_base=todo_api_base,
+        auth_token=auth_token,
+    )
+    dispatcher.register("screen_stream", screen_stream_handler)
+    dispatcher.register("screen.stream_start", screen_stream_handler)
+    dispatcher.register("screen.stream_stop", screen_stream_handler)
     mouse_click_handler = make_mouse_click(settings.physical_input.enabled)
     dispatcher.register("mouse_click", mouse_click_handler)
     dispatcher.register("mouse.click", mouse_click_handler)

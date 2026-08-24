@@ -99,26 +99,26 @@ def make_keyboard_type(enabled: bool, max_chars: int = 4000):
 def make_hotkey(enabled: bool):
     async def hotkey(action: ClientAction) -> dict[str, Any]:
         _require_enabled(enabled)
-        raw = str(action.command or action.args.get("keys") or action.target or "").lower()
+        args = action.args or {}
+        raw = str(action.command or args.get("keys") or action.target or "").lower()
         keys = [k.strip() for k in raw.replace("+", ",").split(",") if k.strip()]
         if not keys:
             raise HandlerError("missing hotkey keys")
         modifiers = [k for k in keys[:-1] if k in {"command", "cmd", "control", "ctrl", "option", "alt", "shift"}]
         key = keys[-1]
-        applescript_mods = []
-        for mod in modifiers:
-            if mod in {"command", "cmd"}:
-                applescript_mods.append("command down")
-            elif mod in {"control", "ctrl"}:
-                applescript_mods.append("control down")
-            elif mod in {"option", "alt"}:
-                applescript_mods.append("option down")
-            elif mod == "shift":
-                applescript_mods.append("shift down")
-        using = f" using {{{', '.join(applescript_mods)}}}" if applescript_mods else ""
+        using = _applescript_modifier_clause(modifiers)
+        escaped_key = _escape_applescript(key)
+
+        duration = _hold_duration(args.get("duration_seconds"))
+        if duration > 0:
+            await _run_script(f'tell application "System Events" to key down "{escaped_key}"{using}')
+            await asyncio.sleep(duration)
+            await _run_script(f'tell application "System Events" to key up "{escaped_key}"{using}')
+            return {"keys": keys, "duration_seconds": duration}
+
         script = (
             'tell application "System Events" to keystroke '
-            f'"{_escape_applescript(key)}"{using}'
+            f'"{escaped_key}"{using}'
         )
         if sys.platform == "darwin":
             await _run_script(script)
@@ -133,69 +133,78 @@ def make_hotkey(enabled: bool):
     return hotkey
 
 
+def _applescript_modifier_clause(modifiers: list[str]) -> str:
+    applescript_mods = []
+    for mod in modifiers:
+        if mod in {"command", "cmd"}:
+            applescript_mods.append("command down")
+        elif mod in {"control", "ctrl"}:
+            applescript_mods.append("control down")
+        elif mod in {"option", "alt"}:
+            applescript_mods.append("option down")
+        elif mod == "shift":
+            applescript_mods.append("shift down")
+    return f" using {{{', '.join(applescript_mods)}}}" if applescript_mods else ""
+
+
+def _hold_duration(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if duration <= 0:
+        return 0.0
+    return min(duration, 30.0)
+
+
+_MOUSE_BUTTONS = {"left", "right", "middle"}
+
+
 def make_mouse_click(enabled: bool):
     async def mouse_click(action: ClientAction) -> dict[str, Any]:
         _require_enabled(enabled)
+        args = action.args or {}
         try:
-            x = int(action.args.get("x"))
-            y = int(action.args.get("y"))
+            x = int(args.get("x"))
+            y = int(args.get("y"))
         except (TypeError, ValueError) as e:
             raise HandlerError("mouse_click requires integer args x and y") from e
-        clicks = int(action.args.get("clicks", 1))
+        clicks = int(args.get("clicks", 1))
         if clicks < 1 or clicks > 3:
             raise HandlerError("mouse_click clicks must be between 1 and 3")
-        if sys.platform == "darwin":
-            for _ in range(clicks):
-                await _run_script(f'tell application "System Events" to click at {{{x}, {y}}}')
-        else:
-            button = str(action.args.get("button", "left")).lower()
-            if button not in {"left", "middle", "right"}:
-                raise HandlerError("mouse_click button must be left, middle, or right")
-            await asyncio.to_thread(_pyautogui().click, x, y, clicks=clicks, button=button)
-        return {"x": x, "y": y, "clicks": clicks}
+        button = str(args.get("button") or "left").strip().lower()
+        if button not in _MOUSE_BUTTONS:
+            raise HandlerError(f"mouse_click button must be one of {sorted(_MOUSE_BUTTONS)}")
+
+        pyautogui = _pyautogui()
+        try:
+            await asyncio.to_thread(pyautogui.click, x, y, clicks=clicks, button=button)
+        except Exception as e:
+            raise HandlerError(f"mouse_click failed: {e}") from e
+        return {"x": x, "y": y, "clicks": clicks, "button": button}
 
     return mouse_click
-
-
-def make_mouse_drag(enabled: bool):
-    async def mouse_drag(action: ClientAction) -> dict[str, Any]:
-        _require_enabled(enabled)
-        try:
-            start_x = int(action.args.get("start_x"))
-            start_y = int(action.args.get("start_y"))
-            end_x = int(action.args.get("end_x"))
-            end_y = int(action.args.get("end_y"))
-        except (TypeError, ValueError) as exc:
-            raise HandlerError("mouse_drag requires start_x, start_y, end_x, end_y") from exc
-        duration = max(0.1, min(float(action.args.get("duration", 0.5)), 5.0))
-        button = str(action.args.get("button", "left")).lower()
-        if button not in {"left", "middle", "right"}:
-            raise HandlerError("mouse_drag button must be left, middle, or right")
-        gui = _pyautogui()
-        await asyncio.to_thread(gui.moveTo, start_x, start_y, duration=0.2)
-        await asyncio.to_thread(gui.dragTo, end_x, end_y, duration=duration, button=button)
-        return {
-            "start": {"x": start_x, "y": start_y},
-            "end": {"x": end_x, "y": end_y},
-            "duration": duration,
-            "button": button,
-        }
-
-    return mouse_drag
 
 
 def make_mouse_move(enabled: bool):
     async def mouse_move(action: ClientAction) -> dict[str, Any]:
         _require_enabled(enabled)
+        args = action.args or {}
         try:
-            x = int(action.args.get("x"))
-            y = int(action.args.get("y"))
-        except (TypeError, ValueError) as exc:
-            raise HandlerError("mouse_move requires integer args x and y") from exc
-        duration = max(0.0, min(float(action.args.get("duration", 0.2)), 5.0))
-        gui = _pyautogui()
-        await asyncio.to_thread(gui.moveTo, x, y, duration=duration)
-        return {"x": x, "y": y, "duration": duration}
+            x = int(args.get("x"))
+            y = int(args.get("y"))
+        except (TypeError, ValueError) as e:
+            raise HandlerError("mouse_move requires integer args x and y") from e
+        duration = _drag_duration(args.get("duration_seconds"))
+
+        pyautogui = _pyautogui()
+        try:
+            await asyncio.to_thread(pyautogui.moveTo, x, y, duration)
+        except Exception as e:
+            raise HandlerError(f"mouse_move failed: {e}") from e
+        return {"x": x, "y": y, "duration_seconds": duration}
 
     return mouse_move
 
@@ -203,18 +212,77 @@ def make_mouse_move(enabled: bool):
 def make_mouse_scroll(enabled: bool):
     async def mouse_scroll(action: ClientAction) -> dict[str, Any]:
         _require_enabled(enabled)
-        amount = int(action.args.get("amount", action.args.get("clicks", 0)))
-        if amount == 0 or abs(amount) > 100:
-            raise HandlerError("mouse_scroll amount must be between -100 and 100, excluding 0")
-        gui = _pyautogui()
-        x = action.args.get("x")
-        y = action.args.get("y")
+        args = action.args or {}
+        direction = str(args.get("direction") or "down").strip().lower()
+        if direction not in {"up", "down", "left", "right"}:
+            raise HandlerError(f"unsupported scroll direction: {direction!r}")
+        try:
+            amount = int(args.get("amount"))
+        except (TypeError, ValueError) as e:
+            raise HandlerError("mouse_scroll requires integer args.amount") from e
+        if amount <= 0:
+            raise HandlerError("mouse_scroll amount must be positive")
+
+        x = args.get("x")
+        y = args.get("y")
+        try:
+            x = int(x) if x is not None else None
+            y = int(y) if y is not None else None
+        except (TypeError, ValueError) as e:
+            raise HandlerError("mouse_scroll args x/y must be integers when provided") from e
+
+        pyautogui = _pyautogui()
+        move_kwargs: dict[str, Any] = {}
         if x is not None and y is not None:
-            await asyncio.to_thread(gui.moveTo, int(x), int(y), duration=0.1)
-        await asyncio.to_thread(gui.scroll, amount)
-        return {"amount": amount, "x": x, "y": y}
+            move_kwargs = {"x": x, "y": y}
+        signed = amount if direction in {"up", "right"} else -amount
+        try:
+            if direction in {"up", "down"}:
+                await asyncio.to_thread(pyautogui.scroll, signed, **move_kwargs)
+            else:
+                await asyncio.to_thread(pyautogui.hscroll, signed, **move_kwargs)
+        except Exception as e:
+            raise HandlerError(f"mouse_scroll failed: {e}") from e
+        return {"direction": direction, "amount": amount, "x": x, "y": y}
 
     return mouse_scroll
+
+
+def make_mouse_drag(enabled: bool):
+    async def mouse_drag(action: ClientAction) -> dict[str, Any]:
+        _require_enabled(enabled)
+        args = action.args or {}
+        try:
+            start_x = int(args.get("start_x"))
+            start_y = int(args.get("start_y"))
+            end_x = int(args.get("end_x"))
+            end_y = int(args.get("end_y"))
+        except (TypeError, ValueError) as e:
+            raise HandlerError(
+                "mouse_drag requires integer args start_x, start_y, end_x, end_y"
+            ) from e
+        duration = _drag_duration(args.get("duration_seconds"))
+        button = str(args.get("button") or "left").strip().lower()
+        if button not in _MOUSE_BUTTONS:
+            raise HandlerError(f"mouse_drag button must be one of {sorted(_MOUSE_BUTTONS)}")
+
+        pyautogui = _pyautogui()
+        try:
+            await asyncio.to_thread(pyautogui.moveTo, start_x, start_y)
+            await asyncio.to_thread(pyautogui.dragTo, end_x, end_y, duration, button=button)
+        except Exception as e:
+            raise HandlerError(f"mouse_drag failed: {e}") from e
+
+        return {
+            "start_x": start_x,
+            "start_y": start_y,
+            "end_x": end_x,
+            "end_y": end_y,
+            "duration_seconds": duration,
+            "button": button,
+        }
+
+    return mouse_drag
 
 
 def make_mouse_position(enabled: bool):
@@ -242,3 +310,11 @@ def make_key_press(enabled: bool):
         return {"key": key, "presses": presses, "interval": interval}
 
     return key_press
+
+
+def _drag_duration(value: Any) -> float:
+    try:
+        duration = float(value) if value is not None else 0.3
+    except (TypeError, ValueError):
+        duration = 0.3
+    return min(max(duration, 0.05), 5.0)
