@@ -14,6 +14,13 @@
       "open_url",
       "notify",
       "clipboard.copy",
+      "file.read",
+      "file.list",
+      "file.search",
+      "system.info",
+      "process.list",
+      "application.list",
+      "app.active",
       "todo.create",
       "todo.update",
       "todo.delete"
@@ -26,8 +33,14 @@
       "clipboard.paste",
       "terminal.run",
       "file.write",
+      "file.mkdir",
+      "file.move",
+      "file.delete",
       "mouse.click",
-      "mouse.drag"
+      "mouse.drag",
+      "mouse.move",
+      "mouse.scroll",
+      "keyboard.press"
     ],
     "browser": {
       "default_browser": "chrome",

@@ -52,29 +52,83 @@ def make_screenshot(enabled: bool, allowed_paths: tuple[str, ...] = ()):
             Path(name).unlink(missing_ok=True)
             path = Path(name)
 
-        if sys.platform == "darwin":
+        region = action.args.get("region")
+        if sys.platform == "darwin" and not region:
             cmd = ["screencapture", "-x", str(path)]
-        elif sys.platform.startswith("linux"):
+        elif sys.platform.startswith("linux") and not region:
             cmd = ["gnome-screenshot", "-f", str(path)]
         else:
-            raise HandlerError(f"screenshot not supported on {sys.platform}")
+            try:
+                from PIL import ImageGrab
+                bbox = None
+                if isinstance(region, dict):
+                    x = int(region.get("x", 0))
+                    y = int(region.get("y", 0))
+                    width = int(region.get("width", 0))
+                    height = int(region.get("height", 0))
+                    if width <= 0 or height <= 0:
+                        raise HandlerError("screenshot region requires positive width and height")
+                    bbox = (x, y, x + width, y + height)
+                image = await asyncio.to_thread(ImageGrab.grab, bbox=bbox, all_screens=True)
+                await asyncio.to_thread(image.save, path, "PNG")
+                cmd = None
+            except HandlerError:
+                raise
+            except Exception as exc:
+                raise HandlerError(f"screenshot capture failed: {exc}") from exc
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate()
-        if proc.returncode != 0:
-            raise HandlerError(
-                f"screenshot failed rc={proc.returncode}: "
-                f"{err.decode(errors='replace')[:300]}"
+        if cmd:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            _, err = await proc.communicate()
+            if proc.returncode != 0:
+                raise HandlerError(
+                    f"screenshot failed rc={proc.returncode}: "
+                    f"{err.decode(errors='replace')[:300]}"
+                )
         image_bytes = path.read_bytes()
+        try:
+            from PIL import Image
+            with Image.open(path) as captured:
+                width, height = captured.size
+        except Exception:
+            width, height = 0, 0
         return {
             "path": str(path),
             "mime_type": "image/png",
             "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+            "width": width,
+            "height": height,
+            "bytes": len(image_bytes),
         }
 
     return screenshot
+
+
+def make_screen_inspect(enabled: bool):
+    async def screen_inspect(action: ClientAction) -> dict[str, Any]:
+        if not enabled:
+            raise HandlerError("screenshot disabled by policy")
+        try:
+            import pyautogui
+        except Exception as exc:
+            raise HandlerError(f"pyautogui unavailable: {exc}") from exc
+        command = str(action.command or "size").lower()
+        if action.type == "screen.size":
+            command = "size"
+        elif action.type == "screen.pixel":
+            command = "pixel"
+        if command == "size":
+            size = await asyncio.to_thread(pyautogui.size)
+            return {"width": int(size.width), "height": int(size.height)}
+        if command == "pixel":
+            x = int(action.args.get("x"))
+            y = int(action.args.get("y"))
+            color = await asyncio.to_thread(pyautogui.pixel, x, y)
+            return {"x": x, "y": y, "rgb": [int(color[0]), int(color[1]), int(color[2])]}
+        raise HandlerError(f"unsupported screen inspection command: {command}")
+
+    return screen_inspect

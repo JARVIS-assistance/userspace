@@ -265,12 +265,29 @@ class ActionDispatcher:
             "app.close",
             "keyboard.type",
             "keyboard.hotkey",
+            "keyboard.press",
             "mouse.click",
             "mouse.drag",
+            "mouse.move",
+            "mouse.scroll",
+            "mouse.position",
             "screen.screenshot",
+            "screen.size",
+            "screen.pixel",
             "clipboard.copy",
             "clipboard.paste",
             "terminal.run",
+            "file.read",
+            "file.write",
+            "file.list",
+            "file.search",
+            "file.mkdir",
+            "file.move",
+            "file.delete",
+            "system.info",
+            "process.list",
+            "application.list",
+            "app.active",
             "notification.show",
             "calendar.open",
             "calendar.create",
@@ -329,12 +346,36 @@ class ActionDispatcher:
             return "mouse.click"
         if action_type == "mouse_drag":
             return "mouse.drag"
+        if action_type == "mouse_move":
+            return "mouse.position" if command in {"position", "get_position"} else "mouse.move"
+        if action_type == "mouse_scroll":
+            return "mouse.scroll"
+        if action_type == "key_press":
+            return "keyboard.press"
         if action_type == "terminal":
             return "terminal.run"
         if action_type == "file_write":
             return "file.write"
         if action_type == "file_read":
-            return "file.read"
+            return "file.search" if command == "search" else ("file.list" if command == "list" else "file.read")
+        if action_type == "file_manage":
+            command_capabilities = {
+                "mkdir": "file.mkdir",
+                "create_directory": "file.mkdir",
+                "move": "file.move",
+                "rename": "file.move",
+                "delete": "file.delete",
+                "remove": "file.delete",
+            }
+            return command_capabilities.get(command)
+        if action_type == "system_info":
+            return {
+                "processes": "process.list",
+                "process_list": "process.list",
+                "applications": "application.list",
+                "application_list": "application.list",
+                "active_app": "app.active",
+            }.get(command, "system.info")
         if action_type == "screenshot":
             return "screen.screenshot"
         if action_type == "todo":

@@ -3,13 +3,19 @@ export type ClientActionType =
     | "terminal" | "terminal.run"
     | "app_control" | "app.open" | "app.focus" | "app.close"
     | "file.write" | "file_read" | "file_write"
+    | "file.list" | "file.mkdir" | "file.move" | "file.delete" | "file_manage"
+    | "file.search"
+    | "system.info" | "process.list" | "system_info"
     | "open_url" | "browser" | "browser.open" | "browser.navigate" | "browser.search" | "browser.select_result"
     | "browser.extract_dom" | "browser.click" | "browser.type"
     | "browser_control" | "web_search" | "notify" | "clipboard"
     | "todo" | "todo.create" | "todo.update" | "todo.delete"
     | "mouse.click" | "mouse.drag" | "mouse_click" | "mouse_drag"
+    | "mouse.move" | "mouse.scroll" | "mouse.position" | "mouse_move" | "mouse_scroll"
     | "keyboard.type" | "keyboard.hotkey" | "keyboard_type" | "hotkey"
-    | "screen.screenshot" | "screenshot";
+    | "keyboard.press" | "key_press"
+    | "screen.screenshot" | "screen.size" | "screen.pixel" | "screenshot"
+    | "application.list" | "app.active";
 
 export interface ClientAction {
     type: ClientActionType;

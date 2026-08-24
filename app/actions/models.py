@@ -22,6 +22,8 @@ ClientActionType = Literal[
     "app_control",
     "file_write",
     "file_read",
+    "file_manage",
+    "system_info",
     "open_url",
     "browser_control",
     "web_search",
@@ -32,6 +34,9 @@ ClientActionType = Literal[
     # 물리 (입력 합성)
     "mouse_click",
     "mouse_drag",
+    "mouse_move",
+    "mouse_scroll",
+    "key_press",
     "keyboard_type",
     "hotkey",
     "screenshot",

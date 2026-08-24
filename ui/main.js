@@ -4,16 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const WebSocketClient = require('ws');
+const { registerUserspaceIpc } = require('./main/userspace-ipc');
 
-const USERSPACE_HOST = process.env.USERSPACE_HOST || '127.0.0.1';
-const USERSPACE_PORT = Number(process.env.USERSPACE_PORT || '8765');
-const AUTH_API_BASE = (process.env.AUTH_API_BASE || 'http://127.0.0.1:8001').replace(/\/+$/, '');
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.JARVIS_GOOGLE_CLIENT_ID || '';
-const USERSPACE_WS_URL = process.env.USERSPACE_WS_URL || `ws://${USERSPACE_HOST}:${USERSPACE_PORT}/ws`;
-const USERSPACE_WS_AUTH_DISABLED =
-  String(process.env.JARVIS_USERSPACE_AUTH_DISABLED || '').toLowerCase();
-const USERSPACE_WS_AUTH_DISABLED_BOOL =
-  USERSPACE_WS_AUTH_DISABLED === '1' || USERSPACE_WS_AUTH_DISABLED === 'true' || USERSPACE_WS_AUTH_DISABLED === 'yes' || USERSPACE_WS_AUTH_DISABLED === 'on';
 const DEFAULT_VISION_DIR = '/Users/chawonje/Desktop/Workspace/project/JARVIS/jarvis_vision';
 
 app.setName('JARVIS Userspace');
@@ -310,31 +302,7 @@ function startVisionRuntime(config = {}) {
 }
 
 // ── IPC handlers ───────────────────────────────────────
-ipcMain.handle('userspace:get-config', async () => {
-  return {
-    host: USERSPACE_HOST,
-    port: USERSPACE_PORT,
-    baseUrl: `http://${USERSPACE_HOST}:${USERSPACE_PORT}`,
-    authApiBase: AUTH_API_BASE,
-    googleClientId: GOOGLE_CLIENT_ID,
-    wsUrl: USERSPACE_WS_URL,
-    authDisabled: USERSPACE_WS_AUTH_DISABLED_BOOL,
-  };
-});
-
-ipcMain.handle('userspace:health', async () => {
-  const url = `http://${USERSPACE_HOST}:${USERSPACE_PORT}/health`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      return { ok: false, status: res.status, data: null };
-    }
-    const data = await res.json();
-    return { ok: true, status: res.status, data };
-  } catch (error) {
-    return { ok: false, status: 0, error: String(error) };
-  }
-});
+registerUserspaceIpc(ipcMain);
 
 ipcMain.handle('tts:synthesize', async (event, payload = {}) => {
   const provider = String(payload.provider || '');

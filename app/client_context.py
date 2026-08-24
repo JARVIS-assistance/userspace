@@ -22,6 +22,9 @@ ACTION_CONTRACT = (
     "Do not place action JSON in assistant text. "
     "For browser page/search/navigation requests, dispatch open_url with an http(s) URL. "
     "For current-page browser interaction, dispatch browser_control commands. "
+    "For desktop visual interaction, dispatch screen.screenshot, inspect the returned image_base64, "
+    "then dispatch mouse.move/mouse.click or keyboard actions with explicit coordinates or keys. "
+    "Use screen.size before coordinate actions when display dimensions are unknown. "
     "If no action_dispatch is emitted, the client will not execute the action."
 )
 
