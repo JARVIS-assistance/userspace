@@ -88,7 +88,7 @@ npm start
 |---|---|---|
 | `USERSPACE_HOST` | `127.0.0.1` | 로컬 API 바인딩 주소 |
 | `USERSPACE_PORT` | `8765` | 로컬 API 포트 |
-| `AUTH_API_BASE` | `http://127.0.0.1:8001` | 인증·할 일 SaaS API |
+| `AUTH_API_BASE` | `http://127.0.0.1:8001` | Controller 인증(`/auth/login`, `/auth/me`)·할 일 API |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:8001` | 대화·액션 컨트롤러 API |
 | `USERSPACE_WS_URL` | 자동 생성 | Electron이 연결할 WebSocket URL |
 | `USERSPACE_CONFIG_PATH` | `config.json` | 런타임 설정 파일 |
@@ -96,7 +96,7 @@ npm start
 | `JARVIS_VISION_ENABLE` | `1` | Vision 기능 사용 허용 여부 (Camera 설정에서 수동 시작) |
 | `JARVIS_VISION_DIR` | 자동 탐색 | Vision 프로젝트 경로 |
 
-`JARVIS_USERSPACE_AUTH_DISABLED=1`은 인증을 우회하므로 개발 환경 외에서는 사용하지 마세요. `AUTH_API_BASE`와 `OLLAMA_BASE_URL`에는 Userspace가 실행되는 노트북에서 접근 가능한 SaaS Controller 주소를 지정해야 합니다. 기본 `127.0.0.1`은 원격 SaaS에는 사용할 수 없습니다.
+`JARVIS_USERSPACE_AUTH_DISABLED=1`은 인증을 우회하므로 개발 환경 외에서는 사용하지 마세요. `AUTH_API_BASE`와 `OLLAMA_BASE_URL`에는 Userspace가 실행되는 노트북에서 접근 가능한 Controller 주소를 지정해야 합니다. Controller는 인증과 대화를 모두 제공하므로 두 값은 같은 주소를 사용합니다. 기본 `127.0.0.1`은 원격 SaaS에는 사용할 수 없습니다.
 
 Vision은 `run.py`가 자동으로 띄우지 않습니다. Electron의 Camera 설정에서 시작할 때 `JARVIS_VISION_DIR`의 `main.py`를 한 번 실행하므로 카메라와 전역 키보드 hook이 중복 등록되지 않습니다.
 
