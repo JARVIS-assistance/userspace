@@ -86,6 +86,7 @@ export default function App({ token, onLogout }: AppProps) {
     const planToastTimerRef = useRef<number | null>(null);
     const waitingMessageTimerRef = useRef<number | null>(null);
     const autoMinimizeActionRef = useRef<string | null>(null);
+    const confirmationRestoreRef = useRef<string | null>(null);
     const activePlanStepIdRef = useRef<string | null>(null);
     const greetingRequestedRef = useRef(false);
 
@@ -121,6 +122,22 @@ export default function App({ token, onLogout }: AppProps) {
     const inputLocked = conversationActionBlock;
     const stopVisible = convBusy || actionVisualActive;
     const micLocked = actionVisualActive;
+
+    // A confirmation must be visible in the full window. If an external
+    // action was minimized before its confirmation arrived, restore it and
+    // let the response handler minimize again only after approval.
+    useEffect(() => {
+        const pending = actionState.state.pendingConfirms[0];
+        if (!pending || !isExternalActionType(String(pending.action?.type || ""))) {
+            return;
+        }
+        if (viewMode !== "sphere" && viewMode !== "minimizing") return;
+        if (confirmationRestoreRef.current === pending.action_id) return;
+        confirmationRestoreRef.current = pending.action_id;
+        autoMinimizeActionRef.current = null;
+        (window as any).jarvisBridge?.restoreWindow?.();
+        setViewMode("restoring");
+    }, [actionState.state.pendingConfirms, viewMode]);
     const assistantTts = useAssistantTts(settingsData.tts);
 
     const clearPlanToastTimer = useCallback(() => {
