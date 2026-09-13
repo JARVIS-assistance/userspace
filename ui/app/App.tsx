@@ -458,6 +458,13 @@ export default function App({ token, onLogout }: AppProps) {
             const shouldAct = payload.should_act === true;
             setConversationActionBlock(false);
             setActionIntentActive(shouldAct);
+            if (payload.status === "in_progress") {
+                setAssistantSubtitle("액션을 준비하고 있어요.");
+                setAssistantSubtitleDim(true);
+            } else if (payload.stage === "planning" && shouldAct) {
+                setAssistantSubtitle("액션을 계획하고 있어요.");
+                setAssistantSubtitleDim(true);
+            }
             return;
         }
 
