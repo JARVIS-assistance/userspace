@@ -2,7 +2,12 @@
   "server": {
     "host": "127.0.0.1",
     "port": 8765,
-    "env": "dev"
+    "env": "dev",
+    "auth_api_base": "http://127.0.0.1:8001"
+  },
+  "ollama": {
+    "base_url": "http://127.0.0.1:8001",
+    "timeout": 60
   },
   "actions": {
     "enabled_types": ["notify", "clipboard", "open_url", "browser", "todo"],

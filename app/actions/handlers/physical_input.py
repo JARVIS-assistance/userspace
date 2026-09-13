@@ -111,9 +111,23 @@ def make_hotkey(enabled: bool):
 
         duration = _hold_duration(args.get("duration_seconds"))
         if duration > 0:
-            await _run_script(f'tell application "System Events" to key down "{escaped_key}"{using}')
-            await asyncio.sleep(duration)
-            await _run_script(f'tell application "System Events" to key up "{escaped_key}"{using}')
+            if sys.platform == "darwin":
+                await _run_script(f'tell application "System Events" to key down "{escaped_key}"{using}')
+                await asyncio.sleep(duration)
+                await _run_script(f'tell application "System Events" to key up "{escaped_key}"{using}')
+            else:
+                gui = _pyautogui()
+                normalized = [
+                    {"command": "win", "cmd": "win", "control": "ctrl", "option": "alt"}.get(item, item)
+                    for item in keys
+                ]
+                for held_key in normalized:
+                    await asyncio.to_thread(gui.keyDown, held_key)
+                try:
+                    await asyncio.sleep(duration)
+                finally:
+                    for held_key in reversed(normalized):
+                        await asyncio.to_thread(gui.keyUp, held_key)
             return {"keys": keys, "duration_seconds": duration}
 
         script = (

@@ -93,10 +93,12 @@ npm start
 | `USERSPACE_WS_URL` | 자동 생성 | Electron이 연결할 WebSocket URL |
 | `USERSPACE_CONFIG_PATH` | `config.json` | 런타임 설정 파일 |
 | `JARVIS_USERSPACE_AUTH_DISABLED` | `0` | 로컬 개발 전용 익명 접속 |
-| `JARVIS_VISION_ENABLE` | `1` | Vision 런타임 자동 실행 여부 |
+| `JARVIS_VISION_ENABLE` | `1` | Vision 기능 사용 허용 여부 (Camera 설정에서 수동 시작) |
 | `JARVIS_VISION_DIR` | 자동 탐색 | Vision 프로젝트 경로 |
 
-`JARVIS_USERSPACE_AUTH_DISABLED=1`은 인증을 우회하므로 개발 환경 외에서는 사용하지 마세요.
+`JARVIS_USERSPACE_AUTH_DISABLED=1`은 인증을 우회하므로 개발 환경 외에서는 사용하지 마세요. `AUTH_API_BASE`와 `OLLAMA_BASE_URL`에는 Userspace가 실행되는 노트북에서 접근 가능한 SaaS Controller 주소를 지정해야 합니다. 기본 `127.0.0.1`은 원격 SaaS에는 사용할 수 없습니다.
+
+Vision은 `run.py`가 자동으로 띄우지 않습니다. Electron의 Camera 설정에서 시작할 때 `JARVIS_VISION_DIR`의 `main.py`를 한 번 실행하므로 카메라와 전역 키보드 hook이 중복 등록되지 않습니다.
 
 ## 통신 API
 

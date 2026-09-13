@@ -32,6 +32,8 @@ def _install_fake_pyautogui() -> types.ModuleType:
     fake.moveTo = lambda *a, **k: None
     fake.scroll = lambda *a, **k: None
     fake.hscroll = lambda *a, **k: None
+    fake.keyDown = lambda *a, **k: None
+    fake.keyUp = lambda *a, **k: None
     sys.modules["pyautogui"] = fake
     return fake
 
@@ -199,6 +201,29 @@ class HotkeyHoldTests(unittest.TestCase):
                 handler = make_hotkey(True)
                 await handler(_action("hotkey", {"keys": "w", "duration_seconds": 999}))
             mock_sleep.assert_awaited_once_with(30.0)
+
+        asyncio.run(run())
+
+    def test_non_macos_duration_uses_pyautogui_key_hold(self) -> None:
+        async def run() -> None:
+            fake = _install_fake_pyautogui()
+            fake.keyDown = MagicMock()
+            fake.keyUp = MagicMock()
+            self.addCleanup(sys.modules.pop, "pyautogui", None)
+            with patch("app.actions.handlers.physical_input.sys.platform", "win32"), patch(
+                "app.actions.handlers.physical_input.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as mock_sleep:
+                handler = make_hotkey(True)
+                result = await handler(
+                    _action("hotkey", {"keys": "ctrl+w", "duration_seconds": 1.5})
+                )
+            self.assertEqual(result["duration_seconds"], 1.5)
+            mock_sleep.assert_awaited_once_with(1.5)
+            self.assertEqual(fake.keyDown.call_args_list[0].args, ("ctrl",))
+            self.assertEqual(fake.keyDown.call_args_list[1].args, ("w",))
+            self.assertEqual(fake.keyUp.call_args_list[0].args, ("w",))
+            self.assertEqual(fake.keyUp.call_args_list[1].args, ("ctrl",))
 
         asyncio.run(run())
 

@@ -6,8 +6,6 @@ const path = require('path');
 const WebSocketClient = require('ws');
 const { registerUserspaceIpc } = require('./main/userspace-ipc');
 
-const DEFAULT_VISION_DIR = '/Users/chawonje/Desktop/Workspace/project/JARVIS/jarvis_vision';
-
 app.setName('JARVIS Userspace');
 app.setPath('userData', path.join(app.getPath('appData'), 'JARVIS Userspace'));
 
@@ -211,8 +209,6 @@ function getVisionRuntimeDir() {
   if (process.env.JARVIS_VISION_DIR) {
     candidates.push(process.env.JARVIS_VISION_DIR);
   }
-  candidates.push(DEFAULT_VISION_DIR);
-
   const roots = [
     __dirname,
     process.cwd(),
@@ -234,7 +230,7 @@ function getVisionRuntimeDir() {
       return candidate;
     }
   }
-  return candidates[0] || path.resolve(__dirname, '..', '..', 'jarvis_vision');
+  return path.resolve(__dirname, '..', '..', 'jarvis_vision');
 }
 
 function pipeVisionOutput(stream, prefix) {
